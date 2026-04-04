@@ -212,9 +212,10 @@ class TemporalExtractor(nn.Module):
         h = self.gqa1(h)          # (batch, W, H)
         h = self.gqa2(h)          # (batch, W, H)
         # Temporal statistics pooling
-        m = h.mean(dim=1)         # (batch, H)
-        s = h.std(dim=1)          # (batch, H)
-        return self.proj(torch.cat([m, s], dim=1))   # (batch, H)
+        # correction=0 avoids NaN when W==1; nan_to_num handles constant signals
+        m = h.mean(dim=1)                          # (batch, H)
+        s = h.std(dim=1, correction=0).nan_to_num(0.0)  # (batch, H)
+        return self.proj(torch.cat([m, s], dim=1))      # (batch, H)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -232,10 +233,13 @@ def temporal_mmd(src: torch.Tensor, tgt: torch.Tensor) -> torch.Tensor:
     (how quickly a resource degrades) not just the static level.
     """
     mmd_mean = mmd_loss(src, tgt)
-    # Variance across the batch dimension approximates temporal spread
-    var_src  = src.var(dim=0)
-    var_tgt  = tgt.var(dim=0)
+    # correction=0 (biased estimator) avoids NaN when batch size == 1
+    var_src  = src.var(dim=0, correction=0)
+    var_tgt  = tgt.var(dim=0, correction=0)
     mmd_var  = torch.sum((var_src - var_tgt) ** 2)
+    # Guard against NaN from degenerate batches
+    if not torch.isfinite(mmd_var):
+        mmd_var = torch.zeros(1, device=src.device)[0]
     return mmd_mean + 0.5 * mmd_var
 
 
@@ -306,7 +310,10 @@ class TA_DATL(nn.Module):
 
     def compute_loss(self, cls_logits, y_src, dom_src, dom_tgt,
                      feat_src, feat_tgt):
-        # L_cls: source classification
+        # Guard: clamp labels to valid range to prevent CUDA index-OOB assert
+        n_cls  = cls_logits.size(1)
+        y_src  = y_src.clamp(0, n_cls - 1)
+
         L_cls  = F.cross_entropy(cls_logits, y_src)
 
         # L_tmmd: temporal MMD (mean + variance alignment)
@@ -319,6 +326,10 @@ class TA_DATL(nn.Module):
                   + F.binary_cross_entropy_with_logits(dom_tgt, ones))
 
         total  = L_cls + self.lambda1 * L_tmmd + self.lambda2 * L_adv
+
+        # Guard: NaN in total would silently corrupt training
+        if not torch.isfinite(total):
+            total = L_cls
         return total, {"L_cls": L_cls.item(),
                        "L_tmmd": L_tmmd.item(),
                        "L_adv": L_adv.item()}
