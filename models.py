@@ -89,7 +89,8 @@ class DomainDiscriminator(nn.Module):
             nn.Linear(feat_dim, feat_dim // 2),
             nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(feat_dim // 2, 1),
-            nn.Sigmoid(),
+            # No Sigmoid here — use F.binary_cross_entropy_with_logits for
+            # numerical stability (avoids the [0,1] assertion on GPU)
         )
     def forward(self, z, alpha=1.0):
         return self.net(grad_reverse(z, alpha))
@@ -314,8 +315,8 @@ class TA_DATL(nn.Module):
         # L_adv: adversarial domain loss
         zeros  = torch.zeros_like(dom_src)
         ones   = torch.ones_like(dom_tgt)
-        L_adv  = (F.binary_cross_entropy(dom_src, zeros)
-                  + F.binary_cross_entropy(dom_tgt, ones))
+        L_adv  = (F.binary_cross_entropy_with_logits(dom_src, zeros)
+                  + F.binary_cross_entropy_with_logits(dom_tgt, ones))
 
         total  = L_cls + self.lambda1 * L_tmmd + self.lambda2 * L_adv
         return total, {"L_cls": L_cls.item(),
@@ -373,8 +374,8 @@ class DATL(nn.Module):
     def compute_loss(self, cls_logits, y_src, dom_src, dom_tgt, feat_src, feat_tgt):
         L_cls  = F.cross_entropy(cls_logits, y_src)
         L_mmd  = mmd_loss(feat_src, feat_tgt)
-        L_adv  = (F.binary_cross_entropy(dom_src, torch.zeros_like(dom_src))
-                  + F.binary_cross_entropy(dom_tgt, torch.ones_like(dom_tgt)))
+        L_adv  = (F.binary_cross_entropy_with_logits(dom_src, torch.zeros_like(dom_src))
+                  + F.binary_cross_entropy_with_logits(dom_tgt, torch.ones_like(dom_tgt)))
         return L_cls + self.lambda1*L_mmd + self.lambda2*L_adv, {}
 
     @torch.no_grad()
@@ -411,8 +412,8 @@ class DANN(nn.Module):
 
     def compute_loss(self, cl, y, ds, dt, *_):
         L_cls = F.cross_entropy(cl, y)
-        L_adv = (F.binary_cross_entropy(ds, torch.zeros_like(ds))
-                 + F.binary_cross_entropy(dt, torch.ones_like(dt)))
+        L_adv = (F.binary_cross_entropy_with_logits(ds, torch.zeros_like(ds))
+                 + F.binary_cross_entropy_with_logits(dt, torch.ones_like(dt)))
         return L_cls + 0.1 * L_adv, {}
 
     def predict(self, x):
@@ -426,7 +427,7 @@ class CDANDiscriminator(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(feat_dim * n_classes, feat_dim // 2),
             nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(feat_dim // 2, 1), nn.Sigmoid())
+            nn.Linear(feat_dim // 2, 1))
 
     def forward(self, feat, cls_prob, alpha=1.0):
         j = torch.bmm(feat.unsqueeze(2), cls_prob.unsqueeze(1)).view(feat.size(0), -1)
@@ -451,8 +452,8 @@ class CDAN(nn.Module):
 
     def compute_loss(self, cl, y, ds, dt, *_):
         L_cls = F.cross_entropy(cl, y)
-        L_adv = (F.binary_cross_entropy(ds, torch.zeros_like(ds))
-                 + F.binary_cross_entropy(dt, torch.ones_like(dt)))
+        L_adv = (F.binary_cross_entropy_with_logits(ds, torch.zeros_like(ds))
+                 + F.binary_cross_entropy_with_logits(dt, torch.ones_like(dt)))
         return L_cls + 0.1 * L_adv, {}
 
     def predict(self, x):
@@ -512,8 +513,8 @@ class ToAlign(nn.Module):
 
     def compute_loss(self, cl, y, ds, dt, *_):
         L_cls = F.cross_entropy(cl, y)
-        L_adv = (F.binary_cross_entropy(ds, torch.zeros_like(ds))
-                 + F.binary_cross_entropy(dt, torch.ones_like(dt)))
+        L_adv = (F.binary_cross_entropy_with_logits(ds, torch.zeros_like(ds))
+                 + F.binary_cross_entropy_with_logits(dt, torch.ones_like(dt)))
         return L_cls + 0.1 * L_adv, {}
 
     def predict(self, x):
