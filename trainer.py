@@ -165,8 +165,8 @@ def train_adversarial(model, name, X_src, y_src, X_tgt, y_tgt, tgt_labeled,
             x_s, y_s, x_t = x_s[:n], y_s[:n], x_t[:n]
 
             opt.zero_grad()
-            out  = model(x_s, x_t, alpha)
-            loss, _ = model.compute_loss(*out[:2], *out[2:4], y_s, *out[4:])
+            cl, ds, dt, fs, ft = model(x_s, x_t, alpha)
+            loss, _ = model.compute_loss(cl, y_s, ds, dt, fs, ft)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
