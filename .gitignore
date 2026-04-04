@@ -1,0 +1,28 @@
+############################
+# Mac / editor noise
+############################
+.DS_Store
+**/.DS_Store
+
+############################
+# Heavy / derived artifacts
+############################
+# Ignore all raw/processed traces and any other data artifacts
+**/data/
+
+# Ignore trained models and intermediate model artifacts
+**/models/
+**/*.pkl
+**/*.joblib
+**/*.pt
+**/*.ckpt
+
+# Ignore large columnar formats
+**/*.parquet
+
+# Ignore logs
+**/*.log
+
+# Common large exports (keep these scoped; avoid ignoring all CSVs globally)
+**/*.xlsx
+
