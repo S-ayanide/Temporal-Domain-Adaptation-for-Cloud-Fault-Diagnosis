@@ -233,7 +233,7 @@ class _TS2VecNet(nn.Module):
     """TCN-based supervised baseline (TS2Vec without contrastive pretraining)."""
     def __init__(self, W, hidden=128, n_layers=3, kernel_size=3, dropout=0.2, horizon=1):
         super().__init__()
-        from models.cwpdda import SelfAttentionBlock  # reuse attention
+        from cwpdda import SelfAttentionBlock  # reuse attention
         self.proj = nn.Linear(1, hidden)
         self.attn = SelfAttentionBlock(hidden, dropout)
         self.fc   = nn.Linear(hidden, horizon)

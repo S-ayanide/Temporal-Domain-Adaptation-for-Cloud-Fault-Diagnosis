@@ -27,6 +27,30 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+# Alibaba cluster trace `machine_usage` — no header in public dumps.
+# v2018 has 9 columns (includes mkpi); older releases often have 8.
+_ALIBABA_USAGE_COLS_9 = [
+    "machine_id",
+    "time_stamp",
+    "cpu_util_percent",
+    "mem_util_percent",
+    "mem_gps",
+    "mkpi",
+    "net_in",
+    "net_out",
+    "disk_io_percent",
+]
+_ALIBABA_USAGE_COLS_8 = [
+    "machine_id",
+    "time_stamp",
+    "cpu_util_percent",
+    "mem_util_percent",
+    "mem_gps",
+    "net_in",
+    "net_out",
+    "disk_io_percent",
+]
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -274,10 +298,16 @@ def load_alibaba(
         + list(root.rglob("machine_usage.csv"))
         + list(root.rglob("machine_usage.csv.gz"))
     )
-    # deduplicate preserving order
-    seen, candidates = set(), [
-        p for p in candidates if not (str(p) in seen or seen.add(str(p)))
-    ]
+    # Deduplicate preserving order (cannot use `seen` inside the same listcomp
+    # that is assigned alongside `seen` — UnboundLocalError in Python 3).
+    _seen: set[str] = set()
+    _uniq: List[Path] = []
+    for p in candidates:
+        key = str(p.resolve())
+        if key not in _seen:
+            _seen.add(key)
+            _uniq.append(p)
+    candidates = _uniq
 
     if not candidates:
         found = [p.name for p in root.rglob("*.csv")][:15]
@@ -340,22 +370,39 @@ def load_alibaba(
 
 def _read_machine_usage(path: Path, nrows: int) -> pd.DataFrame:
     """
-    Alibaba 2017 machine_usage.csv ships without a header in some releases.
-    Detect by checking if the first value is numeric.
+    Alibaba `machine_usage.csv` usually has **no header**; the first row is data.
+
+    Old logic treated any non-numeric first cell as a header — that breaks when
+    `machine_id` is a string like ``m_1932`` (synthetic / string ids): pandas
+    then used the whole first row as bogus column names.
+
+    We only parse as CSV-with-header if the first cell is literally ``machine_id``.
+    Otherwise we assign the standard 8- or 9-column schema (v2018 = 9 incl. mkpi).
     """
     peek = pd.read_csv(path, nrows=1, header=None)
-    first_val = str(peek.iloc[0, 0])
-    has_header = not first_val.replace(".", "").replace("-", "").lstrip("-").isdigit()
+    ncols = len(peek.columns)
+    first_cell = str(peek.iloc[0, 0]).strip().lower()
 
-    if has_header:
-        return pd.read_csv(path, nrows=nrows, low_memory=False)
+    if first_cell == "machine_id":
+        df_h = pd.read_csv(path, nrows=nrows, low_memory=False)
+        if _pick_col(df_h, ["cpu_util_percent", "cpu_util", "cpu"]) is not None:
+            return df_h
 
-    # No-header: Alibaba 2017 public release — 8 columns
-    cols = ["machine_id", "time_stamp", "cpu_util_percent",
-            "mem_util_percent", "mem_gps", "net_in", "net_out", "disk_io_percent"]
-    n = len(peek.columns)
-    return pd.read_csv(path, nrows=nrows, header=None,
-                       names=cols[:n], low_memory=False)
+    if ncols == 9:
+        names = _ALIBABA_USAGE_COLS_9
+    elif ncols == 8:
+        names = _ALIBABA_USAGE_COLS_8
+    else:
+        base = _ALIBABA_USAGE_COLS_9
+        names = [base[i] if i < len(base) else f"col_{i}" for i in range(ncols)]
+
+    return pd.read_csv(
+        path,
+        nrows=nrows,
+        header=None,
+        names=names,
+        low_memory=False,
+    )
 
 
 def _pick_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:

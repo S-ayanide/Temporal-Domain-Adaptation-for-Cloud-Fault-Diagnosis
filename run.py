@@ -127,7 +127,7 @@ def main():
     results_all = {}
 
     if args.paper in ("cwpdda", "both"):
-        from models.cwpdda import CWPDDA
+        from cwpdda import CWPDDA
         cwpdda = CWPDDA(
             window_size=args.window_size,
             d_model=args.d_model,
@@ -147,7 +147,7 @@ def main():
         )
 
     if args.paper in ("mctl", "both"):
-        from models.mctl import MCTL
+        from mctl import MCTL
         mctl = MCTL(
             window_size=args.window_size,
             hidden_dim=128,
