@@ -66,7 +66,12 @@ class ARIMABaseline:
         except ImportError:
             raise ImportError("pip install statsmodels")
         preds = []
-        for x in X:
+        n = len(X)
+        # One ARIMA fit per row — large test sets look like a hang unless we log progress.
+        step = max(500, n // 20) if n > 800 else 0
+        for i, x in enumerate(X):
+            if step and (i % step == 0 or i == n - 1):
+                print(f"    ARIMA predict {i + 1:,}/{n:,}", flush=True)
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")

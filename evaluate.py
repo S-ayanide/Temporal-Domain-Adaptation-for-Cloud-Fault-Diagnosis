@@ -102,9 +102,31 @@ def evaluate_baseline(model, X_test, y_test, metric_fn):
     return metric_fn(y_test, pred)
 
 
+def _maybe_subsample_test(
+    X_te: np.ndarray,
+    y_te: np.ndarray,
+    max_windows: int | None,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Return (X_te, y_te, did_subsample)."""
+    if max_windows is None or len(X_te) <= max_windows:
+        return X_te, y_te, False
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(X_te), size=max_windows, replace=False)
+    idx.sort()
+    return X_te[idx], y_te[idx], True
+
+
 # ─── Full comparison tables ───────────────────────────────────────────────────
 
-def run_cwpdda_comparison(cwpdda_model, data, device="cpu", skip_gluonts=False):
+def run_cwpdda_comparison(
+    cwpdda_model,
+    data,
+    device="cpu",
+    skip_gluonts=False,
+    max_test_windows: int | None = None,
+    subsample_seed: int = 42,
+):
     """
     Trains and evaluates all CWPDDA baselines + CWPDDA on the test set.
     Returns dict of {model_name: metrics}.
@@ -117,6 +139,24 @@ def run_cwpdda_comparison(cwpdda_model, data, device="cpu", skip_gluonts=False):
     X_tr  = data["tgt_train_X"]; y_tr  = data["tgt_train_y"]
     X_te  = data["tgt_test_X"];  y_te  = data["tgt_test_y"]
     W     = X_tr.shape[1]
+
+    X_te, y_te, sub = _maybe_subsample_test(X_te, y_te, max_test_windows, subsample_seed)
+    if sub:
+        print(
+            f"  Test subsampled to {len(X_te):,} windows (--eval-max-test).",
+            flush=True,
+        )
+
+    print(
+        f"  Dataset: {len(X_tr):,} train windows, {len(X_te):,} test windows "
+        f"(W={W}). Baselines can take a while on large test sets.",
+        flush=True,
+    )
+    if len(X_te) == 0:
+        raise RuntimeError(
+            "No target test windows (tgt_test_X is empty). "
+            "Check preprocessing / Alibaba val-test splits."
+        )
 
     results = {}
     kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=50, device=device)
@@ -157,7 +197,13 @@ def run_cwpdda_comparison(cwpdda_model, data, device="cpu", skip_gluonts=False):
     return results
 
 
-def run_mctl_comparison(mctl_model, data, device="cpu"):
+def run_mctl_comparison(
+    mctl_model,
+    data,
+    device="cpu",
+    max_test_windows: int | None = None,
+    subsample_seed: int = 42,
+):
     """Trains and evaluates all MCTL baselines + MCTL."""
     from baselines import (
         ARIMABaseline, LSTMBaseline, GRUBaseline, CNNLSTMBaseline,
@@ -167,6 +213,22 @@ def run_mctl_comparison(mctl_model, data, device="cpu"):
     X_tr  = data["tgt_train_X"]; y_tr  = data["tgt_train_y"]
     X_te  = data["tgt_test_X"];  y_te  = data["tgt_test_y"]
     W     = X_tr.shape[1]
+
+    X_te, y_te, sub = _maybe_subsample_test(X_te, y_te, max_test_windows, subsample_seed)
+    if sub:
+        print(
+            f"  Test subsampled to {len(X_te):,} windows (--eval-max-test).",
+            flush=True,
+        )
+    if len(X_te) == 0:
+        raise RuntimeError(
+            "No target test windows (tgt_test_X is empty). "
+            "Check preprocessing / Alibaba val-test splits."
+        )
+    print(
+        f"  Dataset: {len(X_tr):,} train, {len(X_te):,} test windows (W={W}).",
+        flush=True,
+    )
     kw    = dict(window_size=W, horizon=y_tr.shape[1], epochs=50, device=device)
 
     results = {}
@@ -202,16 +264,19 @@ def run_mctl_comparison(mctl_model, data, device="cpu"):
 # ─── Print tables ─────────────────────────────────────────────────────────────
 
 def print_cwpdda_table(results, title="CWPDDA — CPU Workload Prediction"):
-    print(f"\n{'='*58}")
-    print(f"  {title}")
-    print(f"  Target: MAE=2.4183  MAPE=8.66%  RMSE=2.5859")
-    print(f"{'='*58}")
-    print(f"{'Method':<12}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}")
-    print("-" * 45)
+    print(f"\n{'='*58}", flush=True)
+    print(f"  {title}", flush=True)
+    print(f"  Target: MAE=2.4183  MAPE=8.66%  RMSE=2.5859", flush=True)
+    print(f"{'='*58}", flush=True)
+    if not results:
+        print("  (no results to show)", flush=True)
+        return
+    print(f"{'Method':<12}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}", flush=True)
+    print("-" * 45, flush=True)
     for name, m in results.items():
         marker = " ←" if name == "CWPDDA" else ""
-        print(f"{name:<12}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}{marker}")
-    print("-" * 45)
+        print(f"{name:<12}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}{marker}", flush=True)
+    print("-" * 45, flush=True)
 
 
 def print_mctl_table(results, title="MCTL — Few-Shot Workload Prediction"):

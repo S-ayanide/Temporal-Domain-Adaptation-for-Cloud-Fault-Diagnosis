@@ -100,6 +100,14 @@ def parse_args():
                    help="Few epochs, skip slow baselines — for smoke testing")
     p.add_argument("--skip-gluonts", action="store_true",
                    help="Skip DeepAR/DRP/MQF2 baselines (require gluonts)")
+    p.add_argument(
+        "--eval-max-test",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Step 4 only: evaluate baselines on at most N random test windows "
+             "(much faster; ARIMA fits once per row)",
+    )
 
     # Cache preprocessed tensors (skip slow load + DTW on repeat runs)
     p.add_argument(
@@ -257,11 +265,15 @@ def main():
         results_cwpdda = run_cwpdda_comparison(
             cwpdda, data, device=args.device,
             skip_gluonts=args.skip_gluonts,
+            max_test_windows=args.eval_max_test,
+            subsample_seed=args.seed,
         )
         print_cwpdda_table(results_cwpdda)
         results_all["cwpdda"] = results_cwpdda
-        with open(out_dir / "cwpdda_results.json", "w") as f:
+        cwpdda_json = out_dir / "cwpdda_results.json"
+        with open(cwpdda_json, "w") as f:
             json.dump(results_cwpdda, f, indent=2)
+        print(f"\n  Saved metrics JSON: {cwpdda_json.resolve()}", flush=True)
 
         # Write human-readable table
         lines = ["CWPDDA Results — Google → Alibaba 2017",
@@ -270,11 +282,24 @@ def main():
         lines.append("-" * 45)
         for name, m in results_cwpdda.items():
             lines.append(f"{name:<12}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}")
-        (out_dir / "cwpdda_table.txt").write_text("\n".join(lines))
+        table_path = out_dir / "cwpdda_table.txt"
+        table_path.write_text("\n".join(lines))
+        print(f"  Saved table:        {table_path.resolve()}", flush=True)
+        if "CWPDDA" in results_cwpdda:
+            r = results_cwpdda["CWPDDA"]
+            print(
+                f"\n  CWPDDA test — MAE={r['MAE']:.4f}  "
+                f"MAPE={r['MAPE_%']:.2f}%  RMSE={r['RMSE']:.4f}",
+                flush=True,
+            )
 
     if args.paper in ("mctl", "both"):
         print("\n[MCTL baselines]")
-        results_mctl = run_mctl_comparison(mctl, data, device=args.device)
+        results_mctl = run_mctl_comparison(
+            mctl, data, device=args.device,
+            max_test_windows=args.eval_max_test,
+            subsample_seed=args.seed,
+        )
         print_mctl_table(results_mctl)
         results_all["mctl"] = results_mctl
         with open(out_dir / "mctl_results.json", "w") as f:
