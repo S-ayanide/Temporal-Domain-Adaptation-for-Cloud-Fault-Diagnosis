@@ -1,10 +1,10 @@
 {
-  "n_src_series": 94,
-  "n_tgt_series": 500,
-  "src_windows": 17929,
-  "tgt_train_windows": 2029616,
-  "tgt_val_windows": 668407,
-  "tgt_test_windows": 669001,
+  "n_src_series": 99,
+  "n_tgt_series": 734,
+  "src_windows": 162081,
+  "tgt_train_windows": 2982091,
+  "tgt_val_windows": 982086,
+  "tgt_test_windows": 982975,
   "window_size": 24,
   "horizon": 1
 }
