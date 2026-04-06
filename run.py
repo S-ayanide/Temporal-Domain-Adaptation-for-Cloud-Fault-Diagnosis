@@ -23,8 +23,10 @@ Usage:
     python run.py --paper cwpdda --quick
 
     # First run: save preprocessed arrays (skip slow reload later)
+    python run.py --paper cwpdda ... --save-cache results/preprocessed.npz
 
     # Later runs: train/eval from cache only (steps 1–2 skipped)
+    python run.py --paper cwpdda ... --load-cache results/preprocessed.npz
 """
 
 from __future__ import annotations
@@ -35,7 +37,36 @@ from pathlib import Path
 import numpy as np
 
 
-    
+def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
+    """Ensure CLI matches the run that produced the cache (if cache_spec present)."""
+    spec = meta.get("cache_spec")
+    if not spec:
+        return
+    checks = [
+        ("max_google", spec.get("max_google"), args.max_google),
+        ("max_alibaba", spec.get("max_alibaba"), args.max_alibaba),
+        ("seed", spec.get("seed"), args.seed),
+        ("use_dtw", spec.get("use_dtw"), not args.no_dtw),
+        ("window_size", spec.get("window_size"), args.window_size),
+        ("horizon", spec.get("horizon"), args.horizon),
+    ]
+    bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c != a]
+    if bad:
+        raise RuntimeError(
+            "Preprocess cache does not match current flags:\n"
+            + "\n".join(bad)
+            + "\nOmit --load-cache to rebuild, or use matching arguments."
+        )
+
+
+def _cuda_device_index(device: str) -> int:
+    if not device.startswith("cuda"):
+        return 0
+    if ":" in device:
+        return int(device.split(":", 1)[1])
+    return 0
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--paper",   default="cwpdda",
@@ -65,8 +96,8 @@ def parse_args():
     p.add_argument("--dropout",     type=float, default=0.1)
     p.add_argument("--lr",          type=float, default=1e-3)
     p.add_argument("--epochs",      type=int,   default=100)
-    p.add_argument("--patience",     type=int,   default=20,
-                   help="Early stopping patience")
+    p.add_argument("--patience",    type=int,   default=20,
+                   help="Early stopping patience (CWPDDA)")
     p.add_argument("--batch-size",  type=int,   default=32)
 
     # MCTL hyperparams
@@ -90,13 +121,16 @@ def parse_args():
 
     # Cache preprocessed tensors (skip slow load + DTW on repeat runs)
     p.add_argument(
+        "--save-cache",
         default=None,
         metavar="PATH.npz",
         help="After preprocessing, save arrays to PATH.npz and meta to PATH.json",
     )
     p.add_argument(
+        "--load-cache",
         default=None,
         metavar="PATH.npz",
+        help="Skip steps 1–2; load from PATH.npz (+ .json) written by --save-cache",
     )
     return p.parse_args()
 
@@ -115,7 +149,6 @@ def main():
         args.max_alibaba  = 500
         print("[quick mode] Reduced epochs and data size for smoke test")
 
-
     # ── GPU check ─────────────────────────────────────────────────────────────
     import torch
     if args.device.startswith("cuda"):
@@ -124,33 +157,46 @@ def main():
             print("          Falling back to CPU.\n")
             args.device = "cpu"
         else:
-            print(f"\n[GPU] {args.device}  —  {torch.cuda.get_device_name(0)}  "
+            di = _cuda_device_index(args.device)
+            print(f"\n[GPU] {args.device}  —  {torch.cuda.get_device_name(di)}  "
                   f"({torch.cuda.device_count()} GPU(s))\n")
     else:
         print(f"\n[Device] {args.device}  — pass --device cuda to use GPU\n")
 
-    out_dir  = Path(args.out);  out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir = Path(args.ckpt); ckpt_dir.mkdir(parents=True, exist_ok=True)
+    out_dir  = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = Path(args.ckpt)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
-    from preprocess import build_source_target
+    from preprocess import (
+        build_source_target,
+        load_preprocess_cache,
+        save_preprocess_cache,
+    )
 
-        print("\n" + "="*60)
-        print("="*60)
+    if args.load_cache:
+        if args.save_cache:
+            print("[info] --save-cache ignored when using --load-cache")
+        print("\n" + "=" * 60)
+        print(" Steps 1–2 skipped — loading preprocess cache")
+        print("=" * 60)
+        data = load_preprocess_cache(args.load_cache)
+        _validate_preprocess_cache(data["meta"], args)
     else:
         # ── 1. Load ───────────────────────────────────────────────────────────
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(" Step 1/4 — Load data")
-        print("="*60)
+        print("=" * 60)
         from data_loader import load_google, load_alibaba
 
         google_series  = load_google(args.google,  max_series=args.max_google)
         alibaba_series = load_alibaba(args.alibaba, max_series=args.max_alibaba)
 
-        # ── 2. Preprocess ──────────────────────────────────────────────────────
-        print("\n" + "="*60)
+        # ── 2. Preprocess ─────────────────────────────────────────────────────
+        print("\n" + "=" * 60)
         print(" Step 2/4 — Preprocess")
-        print("="*60)
+        print("=" * 60)
 
         data = build_source_target(
             google_series, alibaba_series,
@@ -159,6 +205,7 @@ def main():
             use_dtw=not args.no_dtw,
             seed=args.seed,
         )
+        data["meta"]["cache_spec"] = {
             "max_google": args.max_google,
             "max_alibaba": args.max_alibaba,
             "seed": args.seed,
@@ -166,14 +213,17 @@ def main():
             "window_size": args.window_size,
             "horizon": args.horizon,
         }
+        if args.save_cache:
+            save_preprocess_cache(args.save_cache, data)
+            print(f"\n[cache] Saved preprocess bundle to {args.save_cache} (+ .json)")
 
     with open(out_dir / "meta.json", "w") as f:
         json.dump(data["meta"], f, indent=2)
 
-    # ── 3. Train ──────────────────────────────────────────────────────────────
-    print("\n" + "="*60)
+    # ── 3. Train ─────────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
     print(" Step 3/4 — Train")
-    print("="*60)
+    print("=" * 60)
     from train import train_cwpdda, train_mctl
 
     results_all = {}
@@ -219,12 +269,14 @@ def main():
         )
 
     # ── 4. Evaluate ───────────────────────────────────────────────────────────
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(" Step 4/4 — Evaluate")
-    print("="*60)
+    print("=" * 60)
     from evaluate import (
-        run_cwpdda_comparison, run_mctl_comparison,
-        print_cwpdda_table, print_mctl_table,
+        run_cwpdda_comparison,
+        run_mctl_comparison,
+        print_cwpdda_table,
+        print_mctl_table,
     )
 
     if args.paper in ("cwpdda", "both"):
@@ -242,13 +294,17 @@ def main():
             json.dump(results_cwpdda, f, indent=2)
         print(f"\n  Saved metrics JSON: {cwpdda_json.resolve()}", flush=True)
 
-        # Write human-readable table
-        lines = ["CWPDDA Results — Google → Alibaba 2017",
-                 "Target: MAE=2.4183  MAPE=8.66%  RMSE=2.5859", "",
-                 f"{'Method':<12}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}"]
+        lines = [
+            "CWPDDA Results — Google → Alibaba 2017",
+            "Target: MAE=2.4183  MAPE=8.66%  RMSE=2.5859",
+            "",
+            f"{'Method':<12}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}",
+        ]
         lines.append("-" * 45)
         for name, m in results_cwpdda.items():
-            lines.append(f"{name:<12}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}")
+            lines.append(
+                f"{name:<12}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}"
+            )
         table_path = out_dir / "cwpdda_table.txt"
         table_path.write_text("\n".join(lines))
         print(f"  Saved table:        {table_path.resolve()}", flush=True)
@@ -272,7 +328,7 @@ def main():
         with open(out_dir / "mctl_results.json", "w") as f:
             json.dump(results_mctl, f, indent=2)
 
-    print(f"\nTotal time: {time.time()-t0:.0f}s")
+    print(f"\nTotal time: {time.time() - t0:.0f}s")
     print(f"Results saved to {out_dir}/")
 
 
