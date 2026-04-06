@@ -23,10 +23,8 @@ Usage:
     python run.py --paper cwpdda --quick
 
     # First run: save preprocessed arrays (skip slow reload later)
-    python run.py --paper cwpdda ... --save-cache results/preprocessed.npz
 
     # Later runs: train/eval from cache only (steps 1–2 skipped)
-    python run.py --paper cwpdda ... --load-cache results/preprocessed.npz
 """
 
 from __future__ import annotations
@@ -37,28 +35,7 @@ from pathlib import Path
 import numpy as np
 
 
-def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
-    """Ensure CLI matches the run that produced the cache (if cache_spec present)."""
-    spec = meta.get("cache_spec")
-    if not spec:
-        return
-    checks = [
-        ("max_google", spec.get("max_google"), args.max_google),
-        ("max_alibaba", spec.get("max_alibaba"), args.max_alibaba),
-        ("seed", spec.get("seed"), args.seed),
-        ("use_dtw", spec.get("use_dtw"), not args.no_dtw),
-        ("window_size", spec.get("window_size"), args.window_size),
-        ("horizon", spec.get("horizon"), args.horizon),
-    ]
-    bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c != a]
-    if bad:
-        raise RuntimeError(
-            "Preprocess cache does not match current flags:\n"
-            + "\n".join(bad)
-            + "\nOmit --load-cache to rebuild, or use matching arguments."
-        )
-
-
+    
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--paper",   default="cwpdda",
@@ -88,6 +65,8 @@ def parse_args():
     p.add_argument("--dropout",     type=float, default=0.1)
     p.add_argument("--lr",          type=float, default=1e-3)
     p.add_argument("--epochs",      type=int,   default=100)
+    p.add_argument("--patience",     type=int,   default=20,
+                   help="Early stopping patience")
     p.add_argument("--batch-size",  type=int,   default=32)
 
     # MCTL hyperparams
@@ -111,16 +90,13 @@ def parse_args():
 
     # Cache preprocessed tensors (skip slow load + DTW on repeat runs)
     p.add_argument(
-        "--save-cache",
         default=None,
         metavar="PATH.npz",
         help="After preprocessing, save arrays to PATH.npz and meta to PATH.json",
     )
     p.add_argument(
-        "--load-cache",
         default=None,
         metavar="PATH.npz",
-        help="Skip steps 1–2; load from PATH.npz (+ .json) written by --save-cache",
     )
     return p.parse_args()
 
@@ -157,16 +133,10 @@ def main():
     ckpt_dir = Path(args.ckpt); ckpt_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
-    from preprocess import build_source_target, load_preprocess_cache, save_preprocess_cache
+    from preprocess import build_source_target
 
-    if args.load_cache:
-        if args.save_cache:
-            print("[info] --save-cache ignored when using --load-cache")
         print("\n" + "="*60)
-        print(" Steps 1–2 skipped — loading preprocess cache")
         print("="*60)
-        data = load_preprocess_cache(args.load_cache)
-        _validate_preprocess_cache(data["meta"], args)
     else:
         # ── 1. Load ───────────────────────────────────────────────────────────
         print("\n" + "="*60)
@@ -189,7 +159,6 @@ def main():
             use_dtw=not args.no_dtw,
             seed=args.seed,
         )
-        data["meta"]["cache_spec"] = {
             "max_google": args.max_google,
             "max_alibaba": args.max_alibaba,
             "seed": args.seed,
@@ -197,9 +166,6 @@ def main():
             "window_size": args.window_size,
             "horizon": args.horizon,
         }
-        if args.save_cache:
-            save_preprocess_cache(args.save_cache, data)
-            print(f"\n[cache] Saved preprocess bundle to {args.save_cache} (+ .json)")
 
     with open(out_dir / "meta.json", "w") as f:
         json.dump(data["meta"], f, indent=2)
@@ -228,6 +194,7 @@ def main():
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
+            patience=args.patience,
             save_dir=str(ckpt_dir),
             verbose=True,
         )
