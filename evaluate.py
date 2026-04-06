@@ -109,7 +109,7 @@ def run_cwpdda_comparison(cwpdda_model, data, device="cpu", skip_gluonts=False):
     Trains and evaluates all CWPDDA baselines + CWPDDA on the test set.
     Returns dict of {model_name: metrics}.
     """
-    from models.baselines import (
+    from baselines import (
         ARIMABaseline, LSTMBaseline,
         DeepARBaseline, DRPBaseline, MQF2Baseline,
     )
@@ -159,7 +159,7 @@ def run_cwpdda_comparison(cwpdda_model, data, device="cpu", skip_gluonts=False):
 
 def run_mctl_comparison(mctl_model, data, device="cpu"):
     """Trains and evaluates all MCTL baselines + MCTL."""
-    from models.baselines import (
+    from baselines import (
         ARIMABaseline, LSTMBaseline, GRUBaseline, CNNLSTMBaseline,
         AutoformerBaseline, BHTARIMABaseline, WANNBaseline, TS2VecBaseline,
     )
