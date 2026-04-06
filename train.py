@@ -25,6 +25,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 
+def _cuda_device_index(device: str) -> int:
+    if not device.startswith("cuda"):
+        return 0
+    if ":" in device:
+        return int(device.split(":", 1)[1])
+    return 0
+
+
 # ─── Shared helpers ───────────────────────────────────────────────────────────
 
 def _loader(X, y, bs, shuffle=True):
@@ -90,13 +98,14 @@ def train_cwpdda(
 
     if verbose:
         import torch as _t
-        _g = (f"  GPU: {_t.cuda.get_device_name(0)}"
+        _di = _cuda_device_index(device)
+        _g = (f"  GPU: {_t.cuda.get_device_name(_di)}"
               if device.startswith("cuda") and _t.cuda.is_available() else "")
         print(f"\n[CWPDDA] Training — {epochs} epochs | device={device}{_g}")
         if device.startswith("cuda"):
             _t.cuda.empty_cache()
-            free = _t.cuda.mem_get_info(0)[0] / 1024**3
-            total = _t.cuda.mem_get_info(0)[1] / 1024**3
+            free = _t.cuda.mem_get_info(_di)[0] / 1024**3
+            total = _t.cuda.mem_get_info(_di)[1] / 1024**3
             print(f"        GPU memory: {free:.1f} GiB free / {total:.1f} GiB total")
 
     for epoch in range(1, epochs + 1):
@@ -118,14 +127,14 @@ def train_cwpdda(
 
         epoch_loss /= max(len(dl_s), 1)
 
-        # Validation
+        # Validation (chunked: full X_val in one pass can exceed CUDA SDPA limits)
         model.eval()
-        with torch.no_grad():
-            xv = torch.from_numpy(X_val).float().to(device)
-            xs_dummy = xv  # inference: use target as dummy source
-            zv, _, _ = model.extractor(xs_dummy, xv)
-            pred_val = model.predictor(zv).cpu().numpy()
-        val_mse = float(np.mean((pred_val.squeeze() - y_val.squeeze()) ** 2))
+        val_bs = min(4096, max(batch_size * 16, 512))
+        if len(X_val) == 0:
+            val_mse = float("inf")
+        else:
+            pred_val = model.predict_numpy_batched(X_val, device, batch_size=val_bs)
+            val_mse = float(np.mean((pred_val.squeeze() - y_val.squeeze()) ** 2))
         sched.step(val_mse)
         history.append({"epoch": epoch, "train_loss": epoch_loss, "val_mse": val_mse})
 

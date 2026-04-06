@@ -75,19 +75,25 @@ def mctl_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
 # ─── Evaluate models ──────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def evaluate_cwpdda(model, X_test, y_test, device="cpu"):
+def evaluate_cwpdda(model, X_test, y_test, device="cpu", infer_batch_size: int = 2048):
     model.eval()
-    xt = torch.from_numpy(X_test).float().to(device)
-    z, _, _ = model.extractor(xt, xt)
-    pred = model.predictor(z).cpu().numpy()
+    pred = model.predict_numpy_batched(X_test, device, batch_size=infer_batch_size)
     return cwpdda_metrics(y_test, pred)
 
 
 @torch.no_grad()
-def evaluate_mctl(model, X_test, y_test, device="cpu"):
+def evaluate_mctl(model, X_test, y_test, device="cpu", infer_batch_size: int = 2048):
     model.eval()
-    xt = torch.from_numpy(X_test).float().to(device)
-    pred = model.predict(xt).cpu().numpy()
+    n = len(X_test)
+    if n == 0:
+        h = int(model.regression_head.out_features)
+        pred = np.empty((0, h), dtype=np.float32)
+    else:
+        parts = []
+        for i in range(0, n, infer_batch_size):
+            xb = torch.from_numpy(X_test[i : i + infer_batch_size]).float().to(device)
+            parts.append(model.predict(xb).cpu().numpy())
+        pred = np.concatenate(parts, axis=0)
     return mctl_metrics(y_test, pred)
 
 

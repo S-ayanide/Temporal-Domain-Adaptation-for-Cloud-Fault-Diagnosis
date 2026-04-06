@@ -36,6 +36,8 @@ Metrics reported in paper (Table 3 / 4):
 
 from __future__ import annotations
 import math
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -341,3 +343,29 @@ class CWPDDA(nn.Module):
             x_src = x_tgt
         z_shared, _, _ = self.extractor(x_src, x_tgt)
         return self.predictor(z_shared)
+
+    @torch.no_grad()
+    def predict_numpy_batched(
+        self,
+        x_np: np.ndarray,
+        device: str,
+        batch_size: int = 2048,
+    ) -> np.ndarray:
+        """
+        Inference on CPU/GPU without OOM or invalid CUDA kernel configs.
+
+        Passing the full validation/test set in one forward (huge batch dim) can
+        break ``scaled_dot_product_attention`` on some GPUs with
+        ``RuntimeError: invalid configuration argument``.
+        """
+        self.eval()
+        n = len(x_np)
+        if n == 0:
+            h = int(self.predictor.fc.out_features)
+            return np.empty((0, h), dtype=np.float32)
+        parts: list[np.ndarray] = []
+        for i in range(0, n, batch_size):
+            xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
+            z, _, _ = self.extractor(xb, xb)
+            parts.append(self.predictor(z).cpu().numpy())
+        return np.concatenate(parts, axis=0)
