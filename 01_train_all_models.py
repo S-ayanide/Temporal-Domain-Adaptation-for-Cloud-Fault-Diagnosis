@@ -6,6 +6,7 @@ Flat models (DANN, CDAN, FixBi, ToAlign, DATL) use mean-pooled windows.
 TA-DATL uses the full temporal window tensor.
 """
 
+import argparse
 import json, logging, sys, time
 from pathlib import Path
 import numpy as np
@@ -17,7 +18,26 @@ sys.path.insert(0, str(BASE_DIR))
 from models import DANN, CDAN, FixBi, ToAlign, DATL, TA_DATL
 from trainer import train_adversarial, train_fixbi, train_ta_datl
 
-PROC_DIR = BASE_DIR / "data" / "processed"
+
+def _parse_args():
+    ap = argparse.ArgumentParser(description="Train all models (Table 1)")
+    ap.add_argument(
+        "--processed-dir",
+        type=str,
+        default=None,
+        help="Directory with meta.json / npz / parquet (default: data/processed). "
+        "Use data/processed_google_alibaba after 00_prepare_data_google_alibaba.py.",
+    )
+    return ap.parse_args()
+
+
+_args = _parse_args()
+PROC_DIR = (
+    Path(_args.processed_dir)
+    if _args.processed_dir and Path(_args.processed_dir).is_absolute()
+    else (BASE_DIR / _args.processed_dir if _args.processed_dir else BASE_DIR / "data" / "processed")
+)
+PROC_DIR = PROC_DIR.resolve()
 CKPT_DIR = BASE_DIR / "checkpoints"
 RES_DIR  = BASE_DIR / "results" / "tables"
 LOG_DIR  = BASE_DIR / "logs"
@@ -28,6 +48,7 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_DIR/"01_train.log"),
               logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
+logger.info("Using processed data directory: %s", PROC_DIR)
 
 HIDDEN   = 128
 DROPOUT  = 0.3

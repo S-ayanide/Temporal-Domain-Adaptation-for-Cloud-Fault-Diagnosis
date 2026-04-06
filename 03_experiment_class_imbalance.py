@@ -2,6 +2,7 @@
 Step 3: Class Imbalance Experiment (Figure 3)  — with checkpointing
 """
 
+import argparse
 import json, logging, sys
 from pathlib import Path
 import numpy as np
@@ -15,7 +16,18 @@ sys.path.insert(0, str(BASE_DIR))
 from models import DATL, TA_DATL, DANN, CDAN, FixBi, ToAlign
 from trainer import train_adversarial, train_fixbi, train_ta_datl
 
-PROC_DIR  = BASE_DIR/"data"/"processed"
+
+def _proc_dir():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--processed-dir", type=str, default=None)
+    a, _ = ap.parse_known_args()
+    if not a.processed_dir:
+        return (BASE_DIR / "data" / "processed").resolve()
+    p = Path(a.processed_dir)
+    return p.resolve() if p.is_absolute() else (BASE_DIR / p).resolve()
+
+
+PROC_DIR = _proc_dir()
 FIG_DIR   = BASE_DIR/"results"/"figures"; FIG_DIR.mkdir(parents=True, exist_ok=True)
 TAB_DIR   = BASE_DIR/"results"/"tables";  TAB_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR   = BASE_DIR/"logs";              LOG_DIR.mkdir(exist_ok=True)

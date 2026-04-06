@@ -22,8 +22,6 @@ data/processed/meta.json
 """
 
 import json
-import tarfile
-import urllib.request
 import warnings
 from pathlib import Path
 from typing import Optional, Tuple
@@ -31,177 +29,23 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from alibaba_io import load_machine_meta, load_machine_usage
+from prepare_common import (
+    FEATURE_COLS,
+    FAULT_NAMES,
+    N_CLASSES,
+    WINDOW_SIZE,
+    WINDOW_STEP,
+    compute_thresholds,
+    make_windows,
+    node_types_from_windows,
+)
+
 BASE_DIR = Path(__file__).parent
 RAW_DIR  = BASE_DIR / "data" / "raw"
 PROC_DIR = BASE_DIR / "data" / "processed"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 PROC_DIR.mkdir(parents=True, exist_ok=True)
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-WINDOW_SIZE  = 20        # timesteps per sequence  (W)
-WINDOW_STEP  = 5         # stride between windows  (overlap = W - step)
-MIN_SEQ_LEN  = WINDOW_SIZE   # machines with fewer readings are dropped
-
-FEATURE_COLS = [
-    "cpu_util_percent",   # CPU usage
-    "mem_util_percent",   # Memory
-    "mem_gps",            # Memory bandwidth
-    "net_in",             # Network in
-    "net_out",            # Network out
-    "disk_io_percent",    # Disk I/O
-]
-
-FAULT_NAMES = {
-    0: "Normal",
-    1: "CPU_Overload",
-    2: "Memory_Leak",
-    3: "Disk_IO_Fault",
-    4: "Network_Fault",
-    5: "Mixed_Fault",
-}
-N_CLASSES = len(FAULT_NAMES)
-
-ALIBABA_BASE = "http://aliopentrace.oss-cn-beijing.aliyuncs.com/v2018Traces"
-COL_NAMES_USAGE = ["machine_id", "time_stamp", "cpu_util_percent",
-                   "mem_util_percent", "mem_gps", "mkpi",
-                   "net_in", "net_out", "disk_io_percent"]
-COL_NAMES_META  = ["machine_id", "time_stamp", "failure_domain_1",
-                   "failure_domain_2", "cpu_num", "mem_size", "status"]
-
-
-# ── Download helpers ──────────────────────────────────────────────────────────
-
-def _try_download(filename: str, dest: Path, timeout: int = 20) -> bool:
-    url = f"{ALIBABA_BASE}/{filename}"
-    print(f"  Trying {url} ...")
-    try:
-        urllib.request.urlopen(url, timeout=timeout).read(512)
-        urllib.request.urlretrieve(url, dest)
-        return True
-    except Exception as e:
-        print(f"  Download failed: {e}")
-        return False
-
-
-def load_machine_meta(raw_dir: Path) -> Optional[pd.DataFrame]:
-    csv = raw_dir / "machine_meta.csv"
-    if csv.exists():
-        return pd.read_csv(csv, header=None, names=COL_NAMES_META)
-    dest = raw_dir / "machine_meta.tar.gz"
-    if not dest.exists():
-        _try_download("machine_meta.tar.gz", dest)
-    if dest.exists():
-        try:
-            with tarfile.open(dest, "r:gz") as tf:
-                tf.extractall(raw_dir)
-            f = list(raw_dir.glob("machine_meta.csv"))
-            if f:
-                return pd.read_csv(f[0], header=None, names=COL_NAMES_META)
-        except Exception as e:
-            print(f"  Cannot extract machine_meta: {e}")
-    return None
-
-
-def load_machine_usage(raw_dir: Path,
-                       target_rows: int = 500_000,
-                       seed: int = 42) -> Optional[pd.DataFrame]:
-    """Random sample spread across the full CSV (not sequential first N rows)."""
-    def _sample(path: Path) -> pd.DataFrame:
-        file_bytes  = path.stat().st_size
-        est_total   = max(file_bytes // 70, target_rows * 2)
-        prob        = min(1.0, (target_rows * 1.5) / est_total)
-        rng_s       = np.random.default_rng(seed)
-        print(f"  Sampling ~{target_rows:,} rows (p≈{prob:.4f}) from "
-              f"{file_bytes/1e9:.2f} GB ...")
-        df = pd.read_csv(path, header=None,
-                         skiprows=lambda i: i > 0 and rng_s.random() > prob,
-                         names=COL_NAMES_USAGE, low_memory=False)
-        print(f"  Loaded {len(df):,} rows across {df['machine_id'].nunique():,} machines")
-        return df
-
-    csv = raw_dir / "machine_usage.csv"
-    if csv.exists():
-        return _sample(csv)
-    dest = raw_dir / "machine_usage.tar.gz"
-    if dest.exists():
-        print("  Extracting machine_usage.tar.gz ...")
-        with tarfile.open(dest, "r:gz") as tf:
-            tf.extractall(raw_dir)
-        f = list(raw_dir.glob("machine_usage.csv"))
-        if f:
-            return _sample(f[0])
-    print("  machine_usage.csv not found — will use synthetic data.")
-    return None
-
-
-# ── Fault labelling (percentile-based, computed on full data) ─────────────────
-
-def compute_thresholds(df: pd.DataFrame) -> dict:
-    """85th-percentile thresholds so every fault class covers ~15% of samples."""
-    return {
-        "cpu":  float(np.percentile(df["cpu_util_percent"].clip(0,100), 85)),
-        "mem":  float(np.percentile(df["mem_util_percent"].clip(0,100), 85)),
-        "disk": float(np.percentile(df["disk_io_percent"].clip(0,100),  85)),
-        "net":  float(np.percentile((df["net_in"]+df["net_out"]).clip(0,200), 80)),
-    }
-
-
-def assign_labels(df: pd.DataFrame, thr: dict) -> np.ndarray:
-    cpu  = df["cpu_util_percent"] > thr["cpu"]
-    mem  = df["mem_util_percent"] > thr["mem"]
-    disk = df["disk_io_percent"]  > thr["disk"]
-    net  = (df["net_in"] + df["net_out"]) > thr["net"]
-    multi = cpu.astype(int)+mem.astype(int)+disk.astype(int)+net.astype(int) >= 2
-    labels = np.zeros(len(df), dtype=np.int64)
-    labels[multi]          = 5
-    labels[cpu  & ~multi]  = 1
-    labels[mem  & ~multi]  = 2
-    labels[disk & ~multi]  = 3
-    labels[net  & ~multi]  = 4
-    return labels
-
-
-# ── Temporal windowing ────────────────────────────────────────────────────────
-
-def make_windows(df: pd.DataFrame,
-                 thr: dict,
-                 window_size: int = WINDOW_SIZE,
-                 step: int = WINDOW_STEP) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    For each machine, sort readings by time and slide a window of
-    `window_size` steps with stride `step`.
-
-    Returns
-    -------
-    X       : (N, window_size, n_features)  float32
-    y       : (N,)                          int64   label of last timestep
-    machine : (N,)                          object  machine_id
-    """
-    sequences, labels, machines = [], [], []
-    feat_arr = df[FEATURE_COLS].values.astype(np.float32)
-    lab_arr  = assign_labels(df, thr)
-    mid_arr  = df["machine_id"].values
-
-    for mid in df["machine_id"].unique():
-        mask  = mid_arr == mid
-        idx   = np.where(mask)[0]
-        if len(idx) < window_size:
-            continue
-        # Sort by position in the (already time-sorted) dataframe
-        f_m = feat_arr[idx]
-        l_m = lab_arr[idx]
-        for start in range(0, len(idx) - window_size + 1, step):
-            end = start + window_size
-            sequences.append(f_m[start:end])        # (W, F)
-            labels.append(l_m[end - 1])             # label at last step
-            machines.append(mid)
-
-    if not sequences:
-        return np.empty((0, window_size, len(FEATURE_COLS)), dtype=np.float32), \
-               np.empty((0,), dtype=np.int64), np.array([])
-    return (np.stack(sequences),
-            np.array(labels, dtype=np.int64),
-            np.array(machines))
 
 
 # ── Synthetic data (fallback) ─────────────────────────────────────────────────
@@ -361,22 +205,7 @@ def main():
     X_src_flat = X_src_t.mean(axis=1)   # (N, F)
     X_tgt_flat = X_tgt_t.mean(axis=1)
 
-    # ── Node types for heterogeneous experiment ───────────────────────────
-    # Assign node type from the mean feature values of each window
-    def _nt_from_window(X_win):
-        means = X_win.mean(axis=1)   # (N, F)
-        df_tmp = pd.DataFrame(means, columns=FEATURE_COLS)
-        cpu_p70  = df_tmp["cpu_util_percent"].quantile(0.70)
-        mem_p70  = df_tmp["mem_util_percent"].quantile(0.70)
-        disk_p60 = df_tmp["disk_io_percent"].quantile(0.60)
-        nt = []
-        for _, r in df_tmp.iterrows():
-            if r["cpu_util_percent"] > cpu_p70:  nt.append("cpu_heavy")
-            elif r["mem_util_percent"] > mem_p70: nt.append("mem_heavy")
-            elif r["disk_io_percent"]  > disk_p60: nt.append("io_heavy")
-            else: nt.append("mixed")
-        return np.array(nt)
-    tgt_node_types = _nt_from_window(X_tgt_t)
+    tgt_node_types = node_types_from_windows(X_tgt_t)
 
     # ── Save ──────────────────────────────────────────────────────────────
     print("\n[4/4] Saving ...")

@@ -43,11 +43,13 @@ p_calibrated = softmax(logits / T)   where T is learnable, initialised at 1.5
 
 ## Connection to Previous Work (pivot/)
 
-The `pivot/` directory explored **cross-platform transfer** (Google Cloud → Alibaba).  
-This work keeps that idea but makes it properly implementable:
-- Source and target are different **node groups** within Alibaba 2018 (different failure domains).
-- The temporal encoder generalises across node types better than a flat MLP.
-- The ablation study (Step 5) shows exactly which components drive the improvement.
+The `pivot/` directory explored **cross-platform transfer** (Google → Alibaba).  
+This repo supports **two** setups:
+
+1. **Within-Alibaba** (`00_prepare_data.py`): source and target are different **failure domains** inside Alibaba 2018 — closest to the replicated paper’s setting.
+2. **Google → Alibaba** (`00_prepare_data_google_alibaba.py`): **Google Cluster Trace 2019** `instance_usage` shards as **source** (fully labeled windows for training), **Alibaba 2018** as **target** (partially labeled). This matches the pivot/ dissertation angle: *train on one cloud’s telemetry, adapt to another*.
+
+Outputs for (2) go to `data/processed_google_alibaba/` so (1)’s `data/processed/` is unchanged.
 
 ---
 
@@ -55,8 +57,12 @@ This work keeps that idea but makes it properly implementable:
 
 ```
 updated_research/
-├── 00_prepare_data.py          — Download & create temporal windows
-├── 01_train_all_models.py      — Table 1: all 6 methods
+├── 00_prepare_data.py                  — Within-Alibaba temporal windows → data/processed/
+├── 00_prepare_data_google_alibaba.py   — Google source + Alibaba target → data/processed_google_alibaba/
+├── run_google_to_alibaba.py            — Prep + Table-1 train for cross-domain
+├── prepare_common.py                   — Shared windowing / labels
+├── alibaba_io.py / google_io.py        — Raw trace loaders
+├── 01_train_all_models.py              — Table 1: all 6 methods (`--processed-dir` …)
 ├── 02_experiment_label_scarcity.py   — Figure 2
 ├── 03_experiment_class_imbalance.py  — Figure 3 (checkpointed)
 ├── 04_experiment_heterogeneous_nodes.py  — Figure 4
@@ -65,8 +71,9 @@ updated_research/
 ├── models.py                   — All architectures
 ├── trainer.py                  — Training engine
 ├── data/
-│   ├── raw/                    — Place machine_meta.csv + machine_usage.csv here
-│   └── processed/              — Auto-generated
+│   ├── raw/                    — Alibaba CSVs; Google under raw/google/cell_*/…
+│   ├── processed/              — Within-Alibaba artifacts
+│   └── processed_google_alibaba/ — Cross-domain artifacts (optional)
 ├── checkpoints/                — Model weights
 ├── results/
 │   ├── tables/                 — JSON + TXT result tables
@@ -108,6 +115,26 @@ python 03_experiment_class_imbalance.py   # checkpointed — safe to interrupt &
 python 04_experiment_heterogeneous_nodes.py
 python 05_ablation_study.py
 ```
+
+### Google (source) → Alibaba (target)
+
+Place **Google 2019** parquet shards where the pivot downloader puts them, e.g.  
+`data/raw/google/cell_a/instance_usage-000000000000.parquet` (any `cell_*`, any `instance_usage*.parquet`).
+
+```bash
+# Build cross-domain tensors (does not overwrite data/processed/)
+python 00_prepare_data_google_alibaba.py
+
+# Train Table 1 on that split
+python 01_train_all_models.py --processed-dir data/processed_google_alibaba
+
+# Or prep + train in one go
+python run_google_to_alibaba.py
+```
+
+Experiments 02–05 also accept `--processed-dir data/processed_google_alibaba`.
+
+**Note:** `instance_usage` has CPU and memory columns only; `mem_gps`, `net_*`, and `disk_io_percent` are **mapped proxies** so the same 6-D model and labeling rules apply. For the thesis, state this explicitly as a trace-schema limitation.
 
 ---
 
