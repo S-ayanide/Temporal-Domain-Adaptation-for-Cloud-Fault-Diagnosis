@@ -118,8 +118,21 @@ python 05_ablation_study.py
 
 ### Google (source) → Alibaba (target)
 
-Place **Google 2019** parquet shards where the pivot downloader puts them, e.g.  
-`data/raw/google/cell_a/instance_usage-000000000000.parquet` (any `cell_*`, any `instance_usage*.parquet`).
+Place **Google 2019** shards under `data/raw/google/` using the **same tree as `pivot/data/raw/google/`**:
+
+```
+data/raw/google/
+  cell_a/
+    instance_usage-000000000000.json.gz   ← primary file for this pipeline
+    instance_events-*.json.gz
+    ...
+  cell_b/ … (optional extra cells)
+```
+
+Either format works:
+
+- **Raw download:** `instance_usage-000000000000.json.gz` (newline-delimited JSON, gzip) — no conversion needed  
+- **Parquet:** `instance_usage-000000000000.parquet` if you already converted with the pivot scripts
 
 ```bash
 # Build cross-domain tensors (does not overwrite data/processed/)
