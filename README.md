@@ -2,6 +2,8 @@
 
 **Dissertation research extending:** *"Domain Adversarial Transfer Learning for Fault Root Cause Identification"*
 
+**Full narrative (paper → Alibaba UDA → TA-DATL → Google source):** see [`RESEARCH_PIPELINE_AND_PARAMETERS.md`](RESEARCH_PIPELINE_AND_PARAMETERS.md).
+
 ---
 
 ## Research Contribution
@@ -59,7 +61,9 @@ Outputs for (2) go to `data/processed_google_alibaba/` so (1)’s `data/processe
 updated_research/
 ├── 00_prepare_data.py                  — Within-Alibaba temporal windows → data/processed/
 ├── 00_prepare_data_google_alibaba.py   — Google source + Alibaba target → data/processed_google_alibaba/
-├── run_google_to_alibaba.py            — Prep + Table-1 train for cross-domain
+├── 00_prepare_data_google_google.py    — Google source + Google target (machine split) → data/processed_google_google/
+├── run_google_to_alibaba.py            — Prep + Table-1 train (Google→Alibaba)
+├── run_google_google.py                — Prep + Table-1 train (Google→Google)
 ├── prepare_common.py                   — Shared windowing / labels
 ├── alibaba_io.py / google_io.py        — Raw trace loaders
 ├── 01_train_all_models.py              — Table 1: all 6 methods (`--processed-dir` …)
@@ -73,7 +77,8 @@ updated_research/
 ├── data/
 │   ├── raw/                    — Alibaba CSVs; Google under raw/google/cell_*/…
 │   ├── processed/              — Within-Alibaba artifacts
-│   └── processed_google_alibaba/ — Cross-domain artifacts (optional)
+│   ├── processed_google_alibaba/ — Google → Alibaba
+│   └── processed_google_google/ — Google → Google (within trace)
 ├── checkpoints/                — Model weights
 ├── results/
 │   ├── tables/                 — JSON + TXT result tables
@@ -148,6 +153,27 @@ python run_google_to_alibaba.py
 Experiments 02–05 also accept `--processed-dir data/processed_google_alibaba`.
 
 **Note:** `instance_usage` has CPU and memory columns only; `mem_gps`, `net_*`, and `disk_io_percent` are **mapped proxies** so the same 6-D model and labeling rules apply. For the thesis, state this explicitly as a trace-schema limitation.
+
+**If Table 1 on Google→Alibaba looks catastrophic (~few % accuracy, AUC `nan`):** that usually means **extreme cross-domain shift**, **collapsed pseudo-labels**, or **only one class** in the labeled target evaluation slice — not that TA-DATL “broke.” For a **fair comparison on Google** (same setting as Alibaba→Alibaba), use **within-Google** prep below.
+
+### Within-Google (source/target both Google)
+
+Same TA-DATL pipeline as `00_prepare_data.py`, but **both** domains are built from **Google `instance_usage`**: disjoint **machine_id** splits (~60% source / 40% target), shared percentile thresholds, temporal windows.
+
+```bash
+python 00_prepare_data_google_google.py
+python 01_train_all_models.py --processed-dir data/processed_google_google
+# or
+python run_google_google.py
+```
+
+Optional: `--google-max-rows 800000` to load more shards; `--frac-source 0.6` to change the split.
+
+| Output folder | Meaning |
+|---------------|---------|
+| `data/processed/` | Alibaba → Alibaba |
+| `data/processed_google_google/` | Google → Google |
+| `data/processed_google_alibaba/` | Google → Alibaba (hardest) |
 
 ---
 
