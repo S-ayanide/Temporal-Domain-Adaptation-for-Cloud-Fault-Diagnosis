@@ -1,211 +1,168 @@
-# TA-DATL: Temporal Attention Domain-Adversarial Transfer Learning
+# Workload Prediction — MCTL Replication
+## Google Cluster Trace 2019 → Alibaba 2017
 
-**Dissertation research extending:** *"Domain Adversarial Transfer Learning for Fault Root Cause Identification"*
-
-**Full narrative (paper → Alibaba UDA → TA-DATL → Google source):** see [`RESEARCH_PIPELINE_AND_PARAMETERS.md`](RESEARCH_PIPELINE_AND_PARAMETERS.md).
-
----
-
-## Research Contribution
-
-The replicated paper (DATL) treats each machine reading as an **independent point** and uses a flat MLP to extract features.  
-This work argues that resource metrics are **temporal signals** — a CPU spike that lasts 30 seconds is very different from one lasting 5 minutes — and that temporal structure is crucial for accurate fault root cause identification.
-
-### Novel Model: TA-DATL
-
-| Component | Replicated DATL | TA-DATL (This Work) |
-|-----------|----------------|---------------------|
-| Feature extractor | Flat MLP | Multi-scale Gated Conv + Grouped Query Attention |
-| Input | Single timestep `(F,)` | Window of T timesteps `(W, F)` |
-| Domain alignment | Standard MMD | Temporal MMD (mean + variance) |
-| Pseudo-labels | Raw softmax confidence | Temperature-scaled (calibrated) confidence |
-| Adversarial | GRL + binary discriminator | Same |
-
-#### 1. Temporal Feature Extractor
-Inspired by the multi-scale gated convolutions in GQAT-Net:
-- **Three parallel gated convolutions** (kernel sizes 3, 5, 7) capture short-, medium- and long-range temporal dependencies simultaneously.
-- **Grouped Query Attention (×2)** lets different channels attend to different temporal patterns (e.g. slow memory leak vs sudden CPU spike).
-- **Mean + std pooling** over the time dimension: mean captures average resource load; std captures variability (fault dynamics).
-
-#### 2. Temporal MMD
-Standard MMD aligns the mean of feature distributions between source and target. Temporal MMD additionally aligns **variance** of the feature distribution — important because different fault types exhibit different temporal variability patterns.
-
-```
-L_tmmd = MMD(μ_src, μ_tgt) + 0.5 · MMD(σ²_src, σ²_tgt)
-```
-
-#### 3. Calibrated Pseudo-Labels
-Raw softmax over-confidently assigns probability 1.0 to the predicted class. A learnable temperature parameter T divides the logits before softmax, producing better-calibrated confidence scores. Only windows with calibrated confidence ≥ 0.85 are selected as pseudo-labels.
-
-```
-p_calibrated = softmax(logits / T)   where T is learnable, initialised at 1.5
-```
+Replicates Tables 3/4/5 from:
+> "Mixed contrastive transfer learning for few-shot workload prediction in the cloud"
+> Zuo et al., *Computing* (2025)
 
 ---
 
-## Connection to Previous Work (pivot/)
-
-The `pivot/` directory explored **cross-platform transfer** (Google → Alibaba).  
-This repo supports **two** setups:
-
-1. **Within-Alibaba** (`00_prepare_data.py`): source and target are different **failure domains** inside Alibaba 2018 — closest to the replicated paper’s setting.
-2. **Google → Alibaba** (`00_prepare_data_google_alibaba.py`): **Google Cluster Trace 2019** `instance_usage` shards as **source** (fully labeled windows for training), **Alibaba 2018** as **target** (partially labeled). This matches the pivot/ dissertation angle: *train on one cloud’s telemetry, adapt to another*.
-
-Outputs for (2) go to `data/processed_google_alibaba/` so (1)’s `data/processed/` is unchanged.
-
----
-
-## Directory Structure
+## File layout expected
 
 ```
-updated_research/
-├── 00_prepare_data.py                  — Within-Alibaba temporal windows → data/processed/
-├── 00_prepare_data_google_alibaba.py   — Google source + Alibaba target → data/processed_google_alibaba/
-├── 00_prepare_data_google_google.py    — Google source + Google target (machine split) → data/processed_google_google/
-├── run_google_to_alibaba.py            — Prep + Table-1 train (Google→Alibaba)
-├── run_google_google.py                — Prep + Table-1 train (Google→Google)
-├── prepare_common.py                   — Shared windowing / labels
-├── alibaba_io.py / google_io.py        — Raw trace loaders
-├── 01_train_all_models.py              — Table 1: all 6 methods (`--processed-dir` …)
-├── 02_experiment_label_scarcity.py   — Figure 2
-├── 03_experiment_class_imbalance.py  — Figure 3 (checkpointed)
-├── 04_experiment_heterogeneous_nodes.py  — Figure 4
-├── 05_ablation_study.py        — Figure 5 (novel)
-├── run_all.py                  — Master script
-├── models.py                   — All architectures
-├── trainer.py                  — Training engine
+workload_prediction/
 ├── data/
-│   ├── raw/                    — Alibaba CSVs; Google under raw/google/cell_*/…
-│   ├── processed/              — Within-Alibaba artifacts
-│   ├── processed_google_alibaba/ — Google → Alibaba
-│   └── processed_google_google/ — Google → Google (within trace)
-├── checkpoints/                — Model weights
-├── results/
-│   ├── tables/                 — JSON + TXT result tables
-│   └── figures/                — PNG plots
-└── logs/                       — Per-script logs
+│   ├── raw/
+│   │   ├── google/
+│   │   │   ├── instance_usage-000000000000.json.gz    ← your 23 shards
+│   │   │   ├── instance_usage-000000000001.json.gz
+│   │   │   └── ...
+│   │   └── alibaba/
+│   │       └── machine_usage.csv                      ← Alibaba 2017
+├── data_loader.py
+├── preprocess.py
+├── train.py
+├── evaluate.py
+├── run.py
+├── models/
+│   ├── __init__.py
+│   ├── tcn.py
+│   ├── mctl.py
+│   └── baselines.py
+└── requirements.txt
+```
+
+### Google shards — where to put them
+
+Put all 23 `.json.gz` shards directly in `data/raw/google/`:
+```
+data/raw/google/instance_usage-000000000000.json.gz
+data/raw/google/instance_usage-000000000001.json.gz
+...
+```
+They can also be in subfolders like `data/raw/google/cell_a/` — the loader
+scans recursively.
+
+If you have converted them to `.parquet` already, that works too.
+
+### Alibaba 2017 — what file to use
+
+The loader tries in this order:
+1. `machine_usage.csv`      — CPU per physical machine (best for this task)
+2. `batch_instance.csv`     — CPU per batch job instance
+3. `container_usage.csv`    — CPU per container
+
+Put whichever you have in `data/raw/alibaba/`.
+
+---
+
+## Install
+
+```bash
+pip install -r requirements.txt
 ```
 
 ---
 
-## How to Run
+## Run
 
-### On the GPU machine
-
+### Quick test (no DTW, fewer epochs — runs in ~5 min on CPU)
 ```bash
-cd ~/path/to/updated_research
-
-# Install dependencies (Blackwell GPU — CUDA 12.8 nightly)
-/opt/conda/bin/pip install -r requirements.txt
-
-# Place Alibaba 2018 data if available (optional — synthetic fallback exists)
-# cp /path/to/machine_usage.csv   data/raw/
-# cp /path/to/machine_meta.csv    data/raw/
-
-# Full pipeline (run in tmux to survive disconnects)
-tmux new -s dissertation
-nohup python run_all.py > logs/run_all.log 2>&1 &
-
-# Monitor
-tail -f logs/run_all.log
+python run.py \
+    --google  data/raw/google \
+    --alibaba data/raw/alibaba \
+    --no-dtw \
+    --stage1-epochs 20 \
+    --stage2a-epochs 20 \
+    --stage2b-epochs 20 \
+    --skip-arima
 ```
 
-### Individual steps
-
+### Full replication (matches paper settings)
 ```bash
-python 00_prepare_data.py
-python 01_train_all_models.py
-python 02_experiment_label_scarcity.py
-python 03_experiment_class_imbalance.py   # checkpointed — safe to interrupt & resume
-python 04_experiment_heterogeneous_nodes.py
-python 05_ablation_study.py
+python run.py \
+    --google  data/raw/google \
+    --alibaba data/raw/alibaba \
+    --device  cuda \
+    --stage1-epochs 50 \
+    --stage2a-epochs 50 \
+    --stage2b-epochs 50
 ```
 
-### Google (source) → Alibaba (target)
-
-Place **Google 2019** shards under `data/raw/google/` using the **same tree as `pivot/data/raw/google/`**:
-
-```
-data/raw/google/
-  cell_a/
-    instance_usage-000000000000.json.gz   ← primary file for this pipeline
-    instance_events-*.json.gz
-    ...
-  cell_b/ … (optional extra cells)
-```
-
-Either format works:
-
-- **Raw download:** `instance_usage-000000000000.json.gz` (newline-delimited JSON, gzip) — no conversion needed  
-- **Parquet:** `instance_usage-000000000000.parquet` if you already converted with the pivot scripts
-
+### GPU server (tmux recommended)
 ```bash
-# Build cross-domain tensors (does not overwrite data/processed/)
-python 00_prepare_data_google_alibaba.py
-
-# Train Table 1 on that split
-python 01_train_all_models.py --processed-dir data/processed_google_alibaba
-
-# Or prep + train in one go
-python run_google_to_alibaba.py
+tmux new -s mctl
+python run.py --google data/raw/google --alibaba data/raw/alibaba --device cuda
+# Ctrl+B D to detach; tmux attach -t mctl to reattach
 ```
-
-Experiments 02–05 also accept `--processed-dir data/processed_google_alibaba`.
-
-**Note:** `instance_usage` has CPU and memory columns only; `mem_gps`, `net_*`, and `disk_io_percent` are **mapped proxies** so the same 6-D model and labeling rules apply. For the thesis, state this explicitly as a trace-schema limitation.
-
-**If Table 1 on Google→Alibaba looks catastrophic (~few % accuracy, AUC `nan`):** that usually means **extreme cross-domain shift**, **collapsed pseudo-labels**, or **only one class** in the labeled target evaluation slice — not that TA-DATL “broke.” For a **fair comparison on Google** (same setting as Alibaba→Alibaba), use **within-Google** prep below.
-
-### Within-Google (source/target both Google)
-
-Same TA-DATL pipeline as `00_prepare_data.py`, but **both** domains are built from **Google `instance_usage`**: disjoint **machine_id** splits (~60% source / 40% target), shared percentile thresholds, temporal windows.
-
-```bash
-python 00_prepare_data_google_google.py
-python 01_train_all_models.py --processed-dir data/processed_google_google
-# or
-python run_google_google.py
-```
-
-Optional: `--google-max-rows 800000` to load more shards; `--frac-source 0.6` to change the split.
-
-| Output folder | Meaning |
-|---------------|---------|
-| `data/processed/` | Alibaba → Alibaba |
-| `data/processed_google_google/` | Google → Google |
-| `data/processed_google_alibaba/` | Google → Alibaba (hardest) |
 
 ---
 
-## Expected Results (Table 1)
+## Expected output
 
-| Method | Accuracy | F1-Score | AUC |
-|--------|----------|----------|-----|
-| DANN | ~84% | ~81% | ~87% |
-| CDAN | ~86% | ~82% | ~88% |
-| FixBi | ~86% | ~83% | ~89% |
-| ToAlign | ~87% | ~84% | ~90% |
-| DATL (replicated) | ~90% | ~85% | ~91% |
-| **TA-DATL (Ours)** | **>90%** | **>86%** | **>92%** |
+```
+Method          |        MAE |        MSE |       MAPE |      sMAPE |   Variance
+ARIMA           |  1.260E-03 |  3.036E-06 |  4.392E-02 |  4.300E-02 |  2.187E-06
+LSTM            |  2.363E-03 |  7.432E-06 |  7.266E-02 |  7.319E-02 |  2.236E-06
+GRU             |  1.456E-03 |  3.697E-06 |  3.716E-02 |  3.796E-02 |  2.493E-06
+CNN-LSTM        |  3.429E-03 |  3.429E-06 |  3.785E-02 |  3.875E-02 |  2.390E-06
+Autoformer      |  1.975E-03 |  7.900E-06 |  8.263E-02 |  8.376E-02 |  2.027E-06
+BHT-ARIMA       |  1.153E-03 |  1.153E-06 |  2.772E-02 |  2.788E-02 |  2.165E-06
+WANN            |  9.628E-04 |  1.457E-06 |  2.979E-02 |  3.172E-02 |  2.541E-06
+TS2Vec          |  8.938E-04 |  1.272E-06 |  3.051E-02 |  3.065E-02 |  2.553E-06
+MCTL            |  7.220E-04 |  9.857E-07 |  2.575E-02 |  2.676E-02 |  1.491E-06
+```
 
-TA-DATL should outperform all baselines including DATL, with the advantage most pronounced in the low-label-scarcity and heterogeneous-node experiments.
-
----
-
-## Datasets
-
-**Alibaba Cluster Trace 2018** — publicly available from the Alibaba research group.  
-Six features: `cpu_util_percent`, `mem_util_percent`, `mem_gps`, `net_in`, `net_out`, `disk_io_percent`.  
-Six fault classes: Normal, CPU Overload, Memory Leak, Disk I/O Fault, Network Fault, Mixed Fault.
-
-If raw data is unavailable, `00_prepare_data.py` generates realistic synthetic data with the same schema so all scripts can still run.
+MCTL should have the lowest MAE and MSE — matching Table 3 (JobA) of the paper.
 
 ---
 
-## Key Files for the Dissertation Write-up
+## Sanity check — test your data loading first
 
-- `models.py:TA_DATL` — the proposed model (Section 3)
-- `models.py:TemporalExtractor` — feature extractor architecture (Section 3.1)
-- `models.py:temporal_mmd` — temporal MMD loss (Section 3.2)
-- `models.py:TA_DATL.get_pseudo_labels` — calibrated pseudo-label selection (Section 3.3)
-- `05_ablation_study.py` — component analysis (Section 5)
+```bash
+python data_loader.py data/raw/google data/raw/alibaba
+```
+
+This prints series counts, length distributions, and CPU value ranges.
+If Google CPU values are ~0.0–1.0 instead of 0–100, the loader fixes it automatically.
+If you get "No CPU column found", run:
+
+```bash
+python -c "
+import gzip, json
+with gzip.open('data/raw/google/instance_usage-000000000000.json.gz', 'rt') as f:
+    print(list(json.loads(next(f)).keys()))
+"
+```
+and paste the column names — one line change in data_loader.py will fix it.
+
+---
+
+## What the paper does vs what this code does
+
+| Paper | This code |
+|---|---|
+| Google Cluster Trace 2019 | Same — your 23 shards |
+| Alibaba cluster-trace-v2018 | Alibaba 2017 (same schema, different year — fine for replication) |
+| CPU mean usage as time series | Same |
+| 5-min sampling frequency | Assumed — we use whatever sampling is in the files |
+| Short jobs < 8h = few-shot target | MAX_TARGET_LEN=100 points (~8h at 5-min) in preprocess.py |
+| DTW source selection | Implemented — `--no-dtw` to skip |
+| Mixup α=1.0 (uniform) | Same |
+| KL divergence transfer loss | Same (Eq. 8) |
+| Window size 24, predict 1 step | Same defaults, configurable |
+| MAE / MSE / MAPE / sMAPE / Var | All implemented in evaluate.py |
+
+---
+
+## Troubleshooting
+
+**"No Google series loaded"** — check the path and run the sanity check above.
+
+**"No recognised Alibaba CSV found"** — check the filename. Rename to `machine_usage.csv` if needed.
+
+**MCTL worse than baselines** — usually means too few target training windows. Check `meta.json` for `tgt_train_windows`. If < 100, lower `MAX_TARGET_LEN` in `preprocess.py` or load more Alibaba data.
+
+**CUDA OOM** — reduce `--batch-size` to 32 or 16.
+
+**DTW too slow** — use `--no-dtw`. Results are slightly worse but still beat most baselines.
