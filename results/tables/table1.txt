@@ -1,12 +1,12 @@
 
 Method               Accuracy  F1-Score       AUC
 ------------------------------------------------------------
-  DANN                  69.8     40.2     86.1
-  CDAN                  69.6     39.7     85.9
-  FixBi                 69.5     39.9     85.8
-  ToAlign               69.6     40.4     86.0
-  DATL                  69.8     40.2     86.4
-  TA-DATL (Ours)        96.6     94.7     99.7
+  DANN                   2.2      0.9      nan
+  CDAN                   2.2      0.9      nan
+  FixBi                  2.2      0.9      nan
+  ToAlign                2.2      0.9      nan
+  DATL                   2.2      0.9      nan
+  TA-DATL (Ours)         2.3      0.9      nan
 ------------------------------------------------------------
 
   Replicated paper baselines (reference):
