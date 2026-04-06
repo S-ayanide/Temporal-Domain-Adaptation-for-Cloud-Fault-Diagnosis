@@ -64,7 +64,7 @@ def train_cwpdda(
         tgt_val_X/y         — Alibaba val
         tgt_test_X/y        — Alibaba test
     """
-    from models.cwpdda import grl_lambda
+    from cwpdda import grl_lambda
 
     model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)

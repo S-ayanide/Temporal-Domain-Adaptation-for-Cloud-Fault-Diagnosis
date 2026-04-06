@@ -18,10 +18,63 @@ Paper definitions (Section 3.1 + 3.2):
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import List, Tuple, Optional
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+_ARRAY_KEYS = (
+    "src_X",
+    "src_y",
+    "tgt_train_X",
+    "tgt_train_y",
+    "tgt_val_X",
+    "tgt_val_y",
+    "tgt_test_X",
+    "tgt_test_y",
+)
+
+
+def save_preprocess_cache(cache_path: str | Path, data: dict) -> None:
+    """
+    Write preprocessed arrays to ``*.npz`` and ``meta`` + ``dtw_pairs`` to ``*.json``
+    (same basename, ``.npz`` → ``.json``).
+    """
+    cache_path = Path(cache_path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    arrays = {k: np.asarray(data[k]) for k in _ARRAY_KEYS}
+    np.savez_compressed(cache_path, **arrays)
+    side = cache_path.with_suffix(".json")
+    payload = {
+        "meta": data["meta"],
+        "dtw_pairs": [list(p) for p in data["dtw_pairs"]],
+    }
+    side.write_text(json.dumps(payload, indent=2))
+
+
+def load_preprocess_cache(cache_path: str | Path) -> dict:
+    """Load dict produced by :func:`save_preprocess_cache`."""
+    cache_path = Path(cache_path)
+    side = cache_path.with_suffix(".json")
+    if not cache_path.is_file():
+        raise FileNotFoundError(f"Cache not found: {cache_path}")
+    if not side.is_file():
+        raise FileNotFoundError(
+            f"Expected sidecar JSON next to cache: {side}\n"
+            "(Save with --save-cache first; both .npz and .json are required.)"
+        )
+    payload = json.loads(side.read_text())
+    bundle = np.load(cache_path, allow_pickle=False)
+    try:
+        data = {k: bundle[k] for k in _ARRAY_KEYS}
+    finally:
+        bundle.close()
+    data["meta"] = payload["meta"]
+    data["dtw_pairs"] = [tuple(p) for p in payload["dtw_pairs"]]
+    return data
 
 
 # ─── Configuration (matches MCTL paper) ──────────────────────────────────────
