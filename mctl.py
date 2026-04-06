@@ -1,236 +1,132 @@
 """
 models/mctl.py
 ==============
-Mixed Contrastive Transfer Learning (MCTL) for few-shot workload prediction.
-Implements the paper: "Mixed contrastive transfer learning for few-shot
-workload prediction in the cloud" (Zuo et al., Computing 2025).
+Mixed Contrastive Transfer Learning (MCTL) — Zuo et al., Computing 2025.
+Google (long series, source) → Alibaba (short series, target).
 
 Two-stage training:
-
-Stage 1 — Data Mixup + Source Encoder pretraining (Section 3.3)
-  - Mixup augmentation on source data
-  - Train source TCN encoder with prediction loss
-
-Stage 2 — Contrastive Representation Transfer (Section 3.4)
-  - Freeze source encoder
-  - For each target window x̃_t (mixed), positive samples = the two
-    original subsamples x^(1), x^(2); negatives = other series subsamples
-  - Minimise KL divergence between source and target representation
-    relationship distributions  (Eq. 8 in paper)
-  - Then fine-tune target regression head (Eq. 9)
+  Stage 1: Train source TCN encoder with prediction loss on Google data.
+  Stage 2: Freeze source encoder; align target encoder via contrastive KL
+           loss; fine-tune regression head on target data.
 """
 
 from __future__ import annotations
-
 from typing import Tuple
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm
 
-from models.tcn import TCNEncoder, TCNPredictor
+
+# ─── TCN encoder ─────────────────────────────────────────────────────────────
+
+class _CausalConv1d(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size, dilation, dropout=0.2):
+        super().__init__()
+        self.pad = (kernel_size - 1) * dilation
+        self.conv = weight_norm(
+            nn.Conv1d(in_ch, out_ch, kernel_size,
+                      padding=self.pad, dilation=dilation)
+        )
+        self.net = nn.Sequential(self.conv, nn.ReLU(), nn.Dropout(dropout))
+        self.ds  = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else None
+        self.conv.weight.data.normal_(0, 0.01)
+
+    def forward(self, x):
+        out = self.net(x)
+        if self.pad > 0:
+            out = out[:, :, :-self.pad]
+        return F.relu(out + (x if self.ds is None else self.ds(x)))
 
 
-# ─── Mixup ────────────────────────────────────────────────────────────────────
+class TCNEncoder(nn.Module):
+    """TCN encoder used in MCTL (Section 3.3). Input: (B,W) → Output: (B,H)"""
 
-def mixup_batch(
-    x: torch.Tensor,
-    alpha: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Apply mixup to a batch of windows (paper Section 3.3, Eq. 1).
+    def __init__(self, window_size=24, hidden_dim=128, n_layers=3,
+                 kernel_size=3, dropout=0.2):
+        super().__init__()
+        layers = []
+        for i in range(n_layers):
+            in_ch  = 1 if i == 0 else hidden_dim
+            layers.append(_CausalConv1d(in_ch, hidden_dim, kernel_size, 2**i, dropout))
+        self.tcn     = nn.Sequential(*layers)
+        self.out_dim = hidden_dim
 
-    λ ~ Beta(α, α)
-    x̃ = λ * x_i + (1 - λ) * x_j
+    def forward(self, x):
+        return self.tcn(x.unsqueeze(1)).mean(dim=2)
 
-    Returns:
-        x_mixed: (B, W)  — augmented samples
-        x1:      (B, W)  — first original samples  (positive)
-        x2:      (B, W)  — second original samples (positive)
-        lam:     scalar  — mixing parameter λ
-    """
-    B = x.size(0)
+
+# ─── Mixup + contrastive KL loss ─────────────────────────────────────────────
+
+def mixup(x, alpha=1.0):
     lam = float(np.random.beta(alpha, alpha))
-
-    idx = torch.randperm(B, device=x.device)
-    x1, x2 = x, x[idx]
-    x_mixed = lam * x1 + (1 - lam) * x2
-    return x_mixed, x1, x2, lam
+    idx = torch.randperm(x.size(0), device=x.device)
+    return lam * x + (1 - lam) * x[idx], x, x[idx], lam
 
 
-# ─── Representation relationship distribution (paper Eq. 6 / 7) ───────────────
-
-def _papn(
-    z_mixed: torch.Tensor,   # (B, H)
-    z_pos1:  torch.Tensor,   # (B, H)
-    z_pos2:  torch.Tensor,   # (B, H)
-    z_neg:   torch.Tensor,   # (B, K, H)
-    lam: float,
-    tau: float = 1.0,
-) -> torch.Tensor:
-    """
-    Compute PAPN — the representation relationship distribution.
-    Paper Eq. 6:
-
-      PAPN(Z) = λ * sim(z̃, z^(1)) / Σ_k [sim(z̃, z^(1)_k) + sim(z̃, z^(2)_k)]
-              + (1-λ) * sim(z̃, z^(2)) / Σ_k [...]
-
-    where sim uses the Student-t kernel: (1 + cos_sim / τ)^{-μ}, μ = (τ+1)/2
-
-    Returns: (B,) probability values
-    """
+def _papn(zm, zp1, zp2, zneg, lam, tau=1.0):
     mu = (tau + 1) / 2
 
-    def _student(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """(B,) or (B,K) student-t similarity."""
-        # a: (B,H), b: (B,H) or (B,K,H)
-        a_n = F.normalize(a, dim=-1)
-        b_n = F.normalize(b, dim=-1)
-        if b_n.dim() == 3:
-            # (B,K)
-            cos = (a_n.unsqueeze(1) * b_n).sum(-1)   # (B,K)
+    def student(a, b):
+        an, bn = F.normalize(a, -1), F.normalize(b, -1)
+        if bn.dim() == 3:
+            cos = (an.unsqueeze(1) * bn).sum(-1)
         else:
-            cos = (a_n * b_n).sum(-1)                 # (B,)
-        return (1.0 + cos / tau) ** (-mu)             # (B,) or (B,K)
+            cos = (an * bn).sum(-1)
+        return (1.0 + cos / tau) ** (-mu)
 
-    sim1 = _student(z_mixed, z_pos1)   # (B,)
-    sim2 = _student(z_mixed, z_pos2)   # (B,)
-
-    # neg: (B, K, H)
-    sim_neg1 = _student(z_mixed, z_neg)                               # (B,K)
-    sim_neg2 = _student(z_mixed, z_neg)                               # (B,K) (same for both)
-    denom = (sim_neg1 + sim_neg2).mean(dim=1) + 1e-8                  # (B,)
-
-    papn = lam * sim1 / denom + (1 - lam) * sim2 / denom              # (B,)
-    return papn.clamp(1e-7, 1.0 - 1e-7)
+    s1 = student(zm, zp1)
+    s2 = student(zm, zp2)
+    sn = student(zm, zneg).mean(dim=1)
+    return (lam * s1 / (sn + 1e-8) + (1 - lam) * s2 / (sn + 1e-8)).clamp(1e-7, 1 - 1e-7)
 
 
-def contrastive_kl_loss(
-    z_src_mixed: torch.Tensor,  # (B, H)
-    z_src_pos1:  torch.Tensor,  # (B, H)
-    z_src_pos2:  torch.Tensor,  # (B, H)
-    z_src_neg:   torch.Tensor,  # (B, K, H)
-    z_tgt_mixed: torch.Tensor,
-    z_tgt_pos1:  torch.Tensor,
-    z_tgt_pos2:  torch.Tensor,
-    z_tgt_neg:   torch.Tensor,
-    lam: float,
-    tau: float = 1.0,
-) -> torch.Tensor:
-    """
-    KL divergence between source and target representation distributions.
-    Paper Eq. 8:  min Σ KL( [P_src, 1-P_src] || [P_tgt, 1-P_tgt] )
-    """
-    p_src = _papn(z_src_mixed, z_src_pos1, z_src_pos2, z_src_neg, lam, tau)
-    p_tgt = _papn(z_tgt_mixed, z_tgt_pos1, z_tgt_pos2, z_tgt_neg, lam, tau)
+def contrastive_kl_loss(xm_s, x1_s, x2_s, xn_s,
+                         xm_t, x1_t, x2_t, xn_t,
+                         enc_src, enc_tgt, lam, tau=1.0):
+    B, K, W = xn_s.shape
 
-    # Bernoulli KL: p_src * log(p_src/p_tgt) + (1-p_src)*log((1-p_src)/(1-p_tgt))
-    kl = (
-        p_src * (p_src / p_tgt).log()
-        + (1 - p_src) * ((1 - p_src) / (1 - p_tgt)).log()
-    )
+    with torch.no_grad():
+        zm_s = enc_src(xm_s)
+        z1_s = enc_src(x1_s)
+        z2_s = enc_src(x2_s)
+        zn_s = enc_src(xn_s.view(B * K, W)).view(B, K, -1)
+
+    zm_t = enc_tgt(xm_t)
+    z1_t = enc_tgt(x1_t)
+    z2_t = enc_tgt(x2_t)
+    zn_t = enc_tgt(xn_t.view(B * K, W)).view(B, K, -1)
+
+    ps = _papn(zm_s, z1_s, z2_s, zn_s, lam, tau)
+    pt = _papn(zm_t, z1_t, z2_t, zn_t, lam, tau)
+
+    kl = ps * (ps / pt).log() + (1 - ps) * ((1 - ps) / (1 - pt)).log()
     return kl.mean()
 
 
-# ─── MCTL model ───────────────────────────────────────────────────────────────
+# ─── Full MCTL model ─────────────────────────────────────────────────────────
 
 class MCTL(nn.Module):
     """
-    Mixed Contrastive Transfer Learning model.
-
-    Wraps:
-      - source_encoder: TCNEncoder (trained on source, then frozen)
-      - target_encoder: TCNEncoder (trained via KL alignment)
-      - regression_head: Linear (trained on target with MSE)
+    MCTL full model.
+    source_encoder: pretrained on Google, then frozen.
+    target_encoder: aligned to source via KL, then fine-tuned.
+    regression_head: MSE on target labels.
     """
 
-    def __init__(
-        self,
-        window_size: int = 24,
-        hidden_dim: int = 128,
-        n_layers: int = 3,
-        kernel_size: int = 3,
-        dropout: float = 0.2,
-        horizon: int = 1,
-        alpha_mixup: float = 1.0,
-        tau: float = 1.0,
-        n_negatives: int = 8,
-    ):
+    def __init__(self, window_size=24, hidden_dim=128, n_layers=3,
+                 kernel_size=3, dropout=0.2, horizon=1,
+                 alpha_mixup=1.0, tau=1.0, n_neg=8):
         super().__init__()
-        self.window_size  = window_size
-        self.hidden_dim   = hidden_dim
-        self.alpha_mixup  = alpha_mixup
-        self.tau          = tau
-        self.n_negatives  = n_negatives
+        self.hidden_dim  = hidden_dim
+        self.alpha_mixup = alpha_mixup
+        self.tau         = tau
+        self.n_neg       = n_neg
 
-        self.source_encoder = TCNEncoder(window_size, hidden_dim, n_layers, kernel_size, dropout)
-        self.target_encoder = TCNEncoder(window_size, hidden_dim, n_layers, kernel_size, dropout)
+        self.source_encoder  = TCNEncoder(window_size, hidden_dim, n_layers, kernel_size, dropout)
+        self.target_encoder  = TCNEncoder(window_size, hidden_dim, n_layers, kernel_size, dropout)
         self.regression_head = nn.Linear(hidden_dim, horizon)
-
-    # ── Stage 1: pretrain source encoder ──────────────────────────────────────
-
-    def source_forward(self, x_src: torch.Tensor) -> torch.Tensor:
-        """x_src: (B, W) → (B, H)"""
-        return self.source_encoder(x_src)
-
-    # ── Stage 2: contrastive transfer ────────────────────────────────────────
-
-    def compute_transfer_loss(
-        self,
-        x_src: torch.Tensor,    # (B, W)
-        x_tgt: torch.Tensor,    # (B, W)
-    ) -> torch.Tensor:
-        """
-        Full MCTL transfer loss (paper Eq. 8).
-
-        1. Mixup both source and target batches
-        2. Encode with (frozen) source encoder and (trainable) target encoder
-        3. KL divergence between representation distributions
-        """
-        # --- Mixup ---
-        xm_s, x1_s, x2_s, lam_s = mixup_batch(x_src, self.alpha_mixup)
-        xm_t, x1_t, x2_t, lam_t = mixup_batch(x_tgt, self.alpha_mixup)
-        lam = (lam_s + lam_t) / 2  # average λ across domains
-
-        # --- Negative samples ---
-        B = x_src.size(0)
-        K = min(self.n_negatives, B - 1)
-        neg_idx = torch.stack(
-            [torch.randperm(B, device=x_src.device)[:K] for _ in range(B)]
-        )  # (B, K)
-        x_neg_s = x_src[neg_idx]    # (B, K, W)
-        x_neg_t = x_tgt[neg_idx]    # (B, K, W)
-
-        # --- Encode (source is frozen in stage 2) ---
-        with torch.no_grad():
-            zm_s  = self.source_encoder(xm_s)                           # (B,H)
-            z1_s  = self.source_encoder(x1_s)                           # (B,H)
-            z2_s  = self.source_encoder(x2_s)                           # (B,H)
-            B_, K_ = x_neg_s.shape[:2]
-            zneg_s = self.source_encoder(
-                x_neg_s.view(B_ * K_, -1)
-            ).view(B_, K_, -1)                                           # (B,K,H)
-
-        zm_t  = self.target_encoder(xm_t)
-        z1_t  = self.target_encoder(x1_t)
-        z2_t  = self.target_encoder(x2_t)
-        zneg_t = self.target_encoder(
-            x_neg_t.view(B_ * K_, -1)
-        ).view(B_, K_, -1)
-
-        return contrastive_kl_loss(
-            zm_s, z1_s, z2_s, zneg_s,
-            zm_t, z1_t, z2_t, zneg_t,
-            lam, self.tau,
-        )
-
-    # ── Prediction ────────────────────────────────────────────────────────────
-
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) → (B, horizon)"""
-        z = self.target_encoder(x)
-        return self.regression_head(z)
 
     def freeze_source(self):
         for p in self.source_encoder.parameters():
@@ -239,3 +135,25 @@ class MCTL(nn.Module):
     def unfreeze_source(self):
         for p in self.source_encoder.parameters():
             p.requires_grad = True
+
+    def transfer_loss(self, x_src, x_tgt):
+        B = x_src.size(0)
+        K = min(self.n_neg, B - 1)
+
+        xm_s, x1_s, x2_s, lam_s = mixup(x_src, self.alpha_mixup)
+        xm_t, x1_t, x2_t, lam_t = mixup(x_tgt, self.alpha_mixup)
+        lam = (lam_s + lam_t) / 2
+
+        neg_idx = torch.stack([torch.randperm(B, device=x_src.device)[:K]
+                                for _ in range(B)])
+        xn_s = x_src[neg_idx]
+        xn_t = x_tgt[neg_idx]
+
+        return contrastive_kl_loss(
+            xm_s, x1_s, x2_s, xn_s,
+            xm_t, x1_t, x2_t, xn_t,
+            self.source_encoder, self.target_encoder, lam, self.tau,
+        )
+
+    def predict(self, x):
+        return self.regression_head(self.target_encoder(x))

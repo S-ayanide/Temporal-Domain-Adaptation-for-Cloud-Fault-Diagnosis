@@ -1,16 +1,19 @@
 """
 train.py
 ========
-Two-stage MCTL training loop.
+Training loops for CWPDDA and MCTL.
 
-Stage 1: Train source encoder on Google data (standard MSE regression)
-Stage 2: Transfer to target via contrastive KL loss, then fine-tune head on Alibaba
+CWPDDA training (Section 4.1 of paper):
+  - Joint optimisation: Ly + Lf + Ld
+  - 70/20/10 split, lr=1e-3, dropout=0.1, α=10, β=0.75
 
-Also trains all baselines from the paper for direct comparison.
+MCTL training (Section 3 of Zuo et al.):
+  - Stage 1: source encoder pretraining on Google data
+  - Stage 2a: contrastive KL transfer
+  - Stage 2b: regression head fine-tuning
 """
 
 from __future__ import annotations
-
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,196 +24,223 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from models.mctl import MCTL
-from models.tcn import TCNPredictor
 
+# ─── Shared helpers ───────────────────────────────────────────────────────────
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _make_loader(X: np.ndarray, y: np.ndarray, batch_size: int,
-                 shuffle: bool = True) -> DataLoader:
-    ds = TensorDataset(
-        torch.from_numpy(X).float(),
-        torch.from_numpy(y).float(),
+def _loader(X, y, bs, shuffle=True):
+    return DataLoader(
+        TensorDataset(torch.from_numpy(X).float(), torch.from_numpy(y).float()),
+        batch_size=bs, shuffle=shuffle, drop_last=False,
     )
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
 
-def _val_loss(model: nn.Module, loader: DataLoader, device: str) -> float:
-    model.eval()
-    total, n = 0.0, 0
+def _val_mse(model_predict_fn, X, y, device):
+    model_predict_fn.__self__.eval() if hasattr(model_predict_fn, '__self__') else None
     with torch.no_grad():
-        for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
-            pred = model.predict(xb) if hasattr(model, "predict") else model(xb)
-            total += F.mse_loss(pred, yb, reduction="sum").item()
-            n += len(xb)
-    model.train()
-    return total / max(n, 1)
+        xb = torch.from_numpy(X).float().to(device)
+        pred = model_predict_fn(xb).cpu().numpy()
+    return float(np.mean((pred.squeeze() - y.squeeze()) ** 2))
 
 
-# ─── Stage 1: source encoder pretraining ──────────────────────────────────────
+# ─── CWPDDA training ──────────────────────────────────────────────────────────
 
-def train_source_encoder(
-    model: MCTL,
-    src_X: np.ndarray,
-    src_y: np.ndarray,
+def train_cwpdda(
+    model,
+    data: dict,
     device: str = "cpu",
-    epochs: int = 50,
+    epochs: int = 100,
     batch_size: int = 64,
     lr: float = 1e-3,
+    patience: int = 15,
+    save_dir: Optional[str] = None,
     verbose: bool = True,
-) -> list:
+) -> dict:
     """
-    Train source TCN encoder + a temporary regression head on Google data.
-    After this stage the source encoder captures workload patterns from Google.
+    Joint training of CWPDDA.
+
+    data keys expected:
+        src_X, src_y        — Google source windows
+        tgt_train_X/y       — Alibaba train
+        tgt_val_X/y         — Alibaba val
+        tgt_test_X/y        — Alibaba test
     """
+    from models.cwpdda import grl_lambda
+
     model = model.to(device)
-    model.unfreeze_source()
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=5, factor=0.5)
 
-    # Temporary head for source pretraining
-    src_head = nn.Linear(model.hidden_dim, model.regression_head.out_features).to(device)
-    optimizer = torch.optim.Adam(
-        list(model.source_encoder.parameters()) + list(src_head.parameters()),
-        lr=lr,
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5, verbose=False
-    )
+    X_src, y_src = data["src_X"], data["src_y"]
+    X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
+    X_val, y_val = data["tgt_val_X"],   data["tgt_val_y"]
 
-    loader = _make_loader(src_X, src_y, batch_size)
-    losses = []
+    n = min(len(X_src), len(X_tr))
+    dl_s = DataLoader(TensorDataset(torch.from_numpy(X_src[:n]).float(),
+                                     torch.from_numpy(y_src[:n]).float()),
+                      batch_size=batch_size, shuffle=True, drop_last=True)
+    dl_t = DataLoader(TensorDataset(torch.from_numpy(X_tr[:n]).float(),
+                                     torch.from_numpy(y_tr[:n]).float()),
+                      batch_size=batch_size, shuffle=True, drop_last=True)
 
-    if verbose:
-        print(f"\n[Stage 1] Source encoder pretraining — {epochs} epochs")
-
-    for epoch in range(1, epochs + 1):
-        epoch_loss = 0.0
-        for xb, yb in loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            z = model.source_encoder(xb)
-            pred = src_head(z)
-            loss = F.mse_loss(pred, yb)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            epoch_loss += loss.item()
-        epoch_loss /= len(loader)
-        scheduler.step(epoch_loss)
-        losses.append(epoch_loss)
-        if verbose and epoch % 10 == 0:
-            print(f"  epoch {epoch:3d}/{epochs}  loss={epoch_loss:.6f}")
-
-    return losses
-
-
-# ─── Stage 2a: contrastive transfer ───────────────────────────────────────────
-
-def train_transfer(
-    model: MCTL,
-    src_X: np.ndarray,
-    tgt_train_X: np.ndarray,
-    device: str = "cpu",
-    epochs: int = 50,
-    batch_size: int = 64,
-    lr: float = 1e-3,
-    verbose: bool = True,
-) -> list:
-    """
-    Stage 2a: update target encoder via contrastive KL loss.
-    Source encoder is frozen. Only target encoder parameters are updated.
-    """
-    model = model.to(device)
-    model.freeze_source()
-
-    optimizer = torch.optim.Adam(model.target_encoder.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-    n = min(len(src_X), len(tgt_train_X))
-    ds_s = TensorDataset(torch.from_numpy(src_X[:n]).float())
-    ds_t = TensorDataset(torch.from_numpy(tgt_train_X[:n]).float())
-    dl_s = DataLoader(ds_s, batch_size=batch_size, shuffle=True, drop_last=True)
-    dl_t = DataLoader(ds_t, batch_size=batch_size, shuffle=True, drop_last=True)
-
-    losses = []
-    if verbose:
-        print(f"\n[Stage 2a] Contrastive transfer — {epochs} epochs")
-
-    for epoch in range(1, epochs + 1):
-        epoch_loss = 0.0
-        for (xs,), (xt,) in zip(dl_s, dl_t):
-            xs, xt = xs.to(device), xt.to(device)
-            optimizer.zero_grad()
-            loss = model.compute_transfer_loss(xs, xt)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.target_encoder.parameters(), 1.0)
-            optimizer.step()
-            epoch_loss += loss.item()
-        scheduler.step()
-        epoch_loss /= max(len(dl_s), 1)
-        losses.append(epoch_loss)
-        if verbose and epoch % 10 == 0:
-            print(f"  epoch {epoch:3d}/{epochs}  KL={epoch_loss:.6f}")
-
-    return losses
-
-
-# ─── Stage 2b: fine-tune regression head ─────────────────────────────────────
-
-def train_regression_head(
-    model: MCTL,
-    tgt_train_X: np.ndarray,
-    tgt_train_y: np.ndarray,
-    tgt_val_X: np.ndarray,
-    tgt_val_y: np.ndarray,
-    device: str = "cpu",
-    epochs: int = 50,
-    batch_size: int = 64,
-    lr: float = 1e-3,
-    patience: int = 10,
-    verbose: bool = True,
-) -> list:
-    """
-    Stage 2b: train regression head on target training data.
-    Target encoder is kept trainable (joint fine-tuning).
-    """
-    model = model.to(device)
-
-    optimizer = torch.optim.Adam(
-        list(model.target_encoder.parameters())
-        + list(model.regression_head.parameters()),
-        lr=lr,
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5, verbose=False
-    )
-
-    train_loader = _make_loader(tgt_train_X, tgt_train_y, batch_size)
-    val_loader   = _make_loader(tgt_val_X,   tgt_val_y,   batch_size, shuffle=False)
+    total_steps = epochs * min(len(dl_s), len(dl_t))
+    step = 0
 
     best_val, best_state, no_improve = float("inf"), None, 0
-    losses = []
+    history = []
 
     if verbose:
-        print(f"\n[Stage 2b] Regression head fine-tune — {epochs} epochs")
+        print(f"\n[CWPDDA] Training — {epochs} epochs | device={device}")
 
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss = 0.0
-        for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            loss = F.mse_loss(model.predict(xb), yb)
+
+        for (xs, ys), (xt, yt) in zip(dl_s, dl_t):
+            xs, ys = xs.to(device), ys.to(device)
+            xt, yt = xt.to(device), yt.to(device)
+
+            opt.zero_grad()
+            loss, info = model.compute_loss(xs, ys, xt, yt, step, total_steps)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            epoch_loss += loss.item()
+            opt.step()
 
-        epoch_loss /= len(train_loader)
-        val_loss = _val_loss(model, val_loader, device)
-        scheduler.step(val_loss)
-        losses.append(epoch_loss)
+            epoch_loss += loss.item()
+            step += 1
+
+        epoch_loss /= max(len(dl_s), 1)
+
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            xv = torch.from_numpy(X_val).float().to(device)
+            xs_dummy = xv  # inference: use target as dummy source
+            zv, _, _ = model.extractor(xs_dummy, xv)
+            pred_val = model.predictor(zv).cpu().numpy()
+        val_mse = float(np.mean((pred_val.squeeze() - y_val.squeeze()) ** 2))
+        sched.step(val_mse)
+        history.append({"epoch": epoch, "train_loss": epoch_loss, "val_mse": val_mse})
+
+        if val_mse < best_val:
+            best_val = val_mse
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if verbose and epoch % 20 == 0:
+            print(f"  epoch {epoch:3d}/{epochs}  loss={epoch_loss:.5f}  val_mse={val_mse:.5f}")
+
+        if no_improve >= patience:
+            if verbose:
+                print(f"  Early stop at epoch {epoch}  best_val_mse={best_val:.5f}")
+            break
+
+    if best_state:
+        model.load_state_dict(best_state)
+
+    if save_dir:
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), Path(save_dir) / "cwpdda.pt")
+
+    return {"history": history, "best_val_mse": best_val}
+
+
+# ─── MCTL training (three stages) ────────────────────────────────────────────
+
+def train_mctl(
+    model,
+    data: dict,
+    device: str = "cpu",
+    stage1_epochs: int = 50,
+    stage2a_epochs: int = 50,
+    stage2b_epochs: int = 50,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    patience: int = 10,
+    save_dir: Optional[str] = None,
+    verbose: bool = True,
+) -> dict:
+    """Three-stage MCTL training."""
+    model = model.to(device)
+
+    X_src, y_src = data["src_X"], data["src_y"]
+    X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
+    X_val, y_val = data["tgt_val_X"],   data["tgt_val_y"]
+
+    # ── Stage 1: source encoder pretraining ──────────────────────────────────
+    if verbose:
+        print(f"\n[MCTL Stage 1] Source encoder pretraining — {stage1_epochs} epochs")
+
+    model.unfreeze_source()
+    src_head = nn.Linear(model.hidden_dim, y_src.shape[1]).to(device)
+    opt1 = torch.optim.Adam(
+        list(model.source_encoder.parameters()) + list(src_head.parameters()), lr=lr
+    )
+    dl_src = _loader(X_src, y_src, batch_size)
+    for epoch in range(1, stage1_epochs + 1):
+        model.train(); src_head.train()
+        for xb, yb in dl_src:
+            xb, yb = xb.to(device), yb.to(device)
+            opt1.zero_grad()
+            F.mse_loss(src_head(model.source_encoder(xb)), yb).backward()
+            opt1.step()
+        if verbose and epoch % 10 == 0:
+            print(f"  epoch {epoch}/{stage1_epochs}")
+
+    # ── Stage 2a: contrastive transfer ───────────────────────────────────────
+    if verbose:
+        print(f"\n[MCTL Stage 2a] Contrastive transfer — {stage2a_epochs} epochs")
+
+    model.freeze_source()
+    opt2a = torch.optim.Adam(model.target_encoder.parameters(), lr=lr * 0.5)
+    n = min(len(X_src), len(X_tr))
+    dl_s2 = DataLoader(TensorDataset(torch.from_numpy(X_src[:n]).float()),
+                       batch_size=batch_size, shuffle=True, drop_last=True)
+    dl_t2 = DataLoader(TensorDataset(torch.from_numpy(X_tr[:n]).float()),
+                       batch_size=batch_size, shuffle=True, drop_last=True)
+
+    for epoch in range(1, stage2a_epochs + 1):
+        model.train()
+        ep_loss = 0.0
+        for (xs,), (xt,) in zip(dl_s2, dl_t2):
+            xs, xt = xs.to(device), xt.to(device)
+            opt2a.zero_grad()
+            loss = model.transfer_loss(xs, xt)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.target_encoder.parameters(), 1.0)
+            opt2a.step()
+            ep_loss += loss.item()
+        if verbose and epoch % 10 == 0:
+            print(f"  epoch {epoch}/{stage2a_epochs}  KL={ep_loss/max(len(dl_s2),1):.5f}")
+
+    # ── Stage 2b: fine-tune regression head ──────────────────────────────────
+    if verbose:
+        print(f"\n[MCTL Stage 2b] Regression head fine-tune — {stage2b_epochs} epochs")
+
+    opt2b = torch.optim.Adam(
+        list(model.target_encoder.parameters()) +
+        list(model.regression_head.parameters()),
+        lr=lr * 0.1,
+    )
+    dl_tr = _loader(X_tr, y_tr, batch_size)
+    dl_va = _loader(X_val, y_val, batch_size, shuffle=False)
+    best_val, best_state, no_improve = float("inf"), None, 0
+
+    for epoch in range(1, stage2b_epochs + 1):
+        model.train()
+        for xb, yb in dl_tr:
+            xb, yb = xb.to(device), yb.to(device)
+            opt2b.zero_grad()
+            F.mse_loss(model.predict(xb), yb).backward()
+            opt2b.step()
+
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for xb, yb in dl_va:
+                val_loss += F.mse_loss(model.predict(xb.to(device)), yb.to(device)).item()
+        val_loss /= max(len(dl_va), 1)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -220,82 +250,16 @@ def train_regression_head(
             no_improve += 1
 
         if verbose and epoch % 10 == 0:
-            print(f"  epoch {epoch:3d}/{epochs}  train_mse={epoch_loss:.6f}  val_mse={val_loss:.6f}")
-
+            print(f"  epoch {epoch}/{stage2b_epochs}  val_mse={val_loss:.5f}")
         if no_improve >= patience:
-            if verbose:
-                print(f"  Early stop at epoch {epoch}")
+            if verbose: print(f"  Early stop at epoch {epoch}")
             break
 
     if best_state:
         model.load_state_dict(best_state)
 
-    return losses
-
-
-# ─── Full MCTL training pipeline ─────────────────────────────────────────────
-
-def train_mctl(
-    data: dict,
-    device: str = "cpu",
-    window_size: int = 24,
-    hidden_dim: int = 128,
-    n_layers: int = 3,
-    kernel_size: int = 3,
-    dropout: float = 0.2,
-    horizon: int = 1,
-    stage1_epochs: int = 50,
-    stage2a_epochs: int = 50,
-    stage2b_epochs: int = 50,
-    batch_size: int = 64,
-    lr: float = 1e-3,
-    save_dir: Optional[str] = None,
-    verbose: bool = True,
-) -> MCTL:
-    """
-    Full two-stage MCTL training.
-    `data` is the dict returned by preprocess.build_source_target().
-    """
-    model = MCTL(
-        window_size=window_size,
-        hidden_dim=hidden_dim,
-        n_layers=n_layers,
-        kernel_size=kernel_size,
-        dropout=dropout,
-        horizon=horizon,
-    )
-
-    t0 = time.time()
-
-    # Stage 1
-    train_source_encoder(
-        model, data["src_X"], data["src_y"],
-        device=device, epochs=stage1_epochs,
-        batch_size=batch_size, lr=lr, verbose=verbose,
-    )
-
-    # Stage 2a
-    train_transfer(
-        model, data["src_X"], data["tgt_train_X"],
-        device=device, epochs=stage2a_epochs,
-        batch_size=batch_size, lr=lr * 0.5, verbose=verbose,
-    )
-
-    # Stage 2b
-    train_regression_head(
-        model,
-        data["tgt_train_X"], data["tgt_train_y"],
-        data["tgt_val_X"],   data["tgt_val_y"],
-        device=device, epochs=stage2b_epochs,
-        batch_size=batch_size, lr=lr * 0.1, verbose=verbose,
-    )
-
-    if verbose:
-        print(f"\n  Total training time: {time.time() - t0:.1f}s")
-
     if save_dir:
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), Path(save_dir) / "mctl.pt")
-        print(f"  Saved to {save_dir}/mctl.pt")
 
-    return model
+    return {"best_val_mse": best_val}

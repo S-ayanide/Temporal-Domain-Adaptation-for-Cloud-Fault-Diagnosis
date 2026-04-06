@@ -1,7 +1,10 @@
 torch>=2.0.0
 numpy>=1.24
 pandas>=2.0
-statsmodels>=0.14       # for ARIMA baseline
-pyarrow>=12.0           # for reading parquet Google shards
-fastparquet>=2023.0     # alternative parquet reader
-scipy>=1.11             # optional: faster DTW
+statsmodels>=0.14       # ARIMA baseline
+pyarrow>=12.0           # read parquet Google shards
+
+# Optional — needed for DeepAR / DRP / MQF2 (CWPDDA paper baselines)
+# If not installed, these fall back to LSTM/GRU/CNN-LSTM automatically
+# pip install "gluonts[torch]"
+# gluonts[torch]>=0.14
