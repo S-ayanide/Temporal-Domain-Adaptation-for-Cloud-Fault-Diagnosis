@@ -163,8 +163,10 @@ def run_cwpdda_comparison(
 
     print("  ARIMA...",  end=" ", flush=True)
     m = ARIMABaseline(); m.fit(X_tr, y_tr)
-    results["ARIMA"] = evaluate_baseline(m, X_te, y_te, cwpdda_metrics)
-    print("done")
+    arima_n = min(500, len(X_te))
+    idx = np.random.default_rng(42).choice(len(X_te), arima_n, replace=False)
+    results["ARIMA"] = evaluate_baseline(m, X_te[idx], y_te[idx], cwpdda_metrics)
+    print(f"done  (sampled {arima_n} windows)")
 
     print("  LSTM...",   end=" ", flush=True)
     m = LSTMBaseline(**kw); m.fit(X_tr, y_tr)

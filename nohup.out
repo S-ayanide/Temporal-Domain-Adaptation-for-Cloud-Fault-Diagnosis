@@ -1,0 +1,18 @@
+usage: run.py [-h] [--paper {cwpdda,mctl,both}] [--google GOOGLE] [--alibaba ALIBABA] [--out OUT]
+              [--ckpt CKPT] [--device DEVICE] [--seed SEED] [--max-google MAX_GOOGLE]
+              [--max-alibaba MAX_ALIBABA] [--window-size WINDOW_SIZE] [--horizon HORIZON] [--no-dtw]
+              [--d-model D_MODEL] [--lstm-hidden LSTM_HIDDEN] [--lstm-layers LSTM_LAYERS]
+              [--dropout DROPOUT] [--lr LR] [--epochs EPOCHS] [--patience PATIENCE]
+              [--batch-size BATCH_SIZE] [--stage1-epochs STAGE1_EPOCHS]
+              [--stage2a-epochs STAGE2A_EPOCHS] [--stage2b-epochs STAGE2B_EPOCHS] [--quick]
+              [--skip-gluonts] [--eval-max-test N] [--save-cache PATH.npz] [--load-cache PATH.npz]
+run.py: error: unrecognized arguments: -
+usage: run.py [-h] [--paper {cwpdda,mctl,both}] [--google GOOGLE] [--alibaba ALIBABA] [--out OUT]
+              [--ckpt CKPT] [--device DEVICE] [--seed SEED] [--max-google MAX_GOOGLE]
+              [--max-alibaba MAX_ALIBABA] [--window-size WINDOW_SIZE] [--horizon HORIZON] [--no-dtw]
+              [--d-model D_MODEL] [--lstm-hidden LSTM_HIDDEN] [--lstm-layers LSTM_LAYERS]
+              [--dropout DROPOUT] [--lr LR] [--epochs EPOCHS] [--patience PATIENCE]
+              [--batch-size BATCH_SIZE] [--stage1-epochs STAGE1_EPOCHS]
+              [--stage2a-epochs STAGE2A_EPOCHS] [--stage2b-epochs STAGE2B_EPOCHS] [--quick]
+              [--skip-gluonts] [--eval-max-test N] [--save-cache PATH.npz] [--load-cache PATH.npz]
+run.py: error: unrecognized arguments: -

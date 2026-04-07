@@ -1,0 +1,19 @@
+{
+  "n_src_series": 2009,
+  "n_tgt_series": 734,
+  "src_windows": 125836,
+  "tgt_train_windows": 200000,
+  "tgt_val_windows": 66666,
+  "tgt_test_windows": 66666,
+  "window_size": 24,
+  "horizon": 1,
+  "window_step": 5,
+  "cache_spec": {
+    "max_google": 3000,
+    "max_alibaba": 3000,
+    "seed": 42,
+    "use_dtw": false,
+    "window_size": 24,
+    "horizon": 1
+  }
+}
