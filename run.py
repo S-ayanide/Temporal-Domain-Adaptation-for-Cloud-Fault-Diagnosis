@@ -23,8 +23,10 @@ Usage:
     python run.py --paper cwpdda --quick
 
     # First run: save preprocessed arrays (skip slow reload later)
+    python run.py --paper cwpdda ... --save-cache results/preprocessed.npz
 
     # Later runs: train/eval from cache only (steps 1–2 skipped)
+    python run.py --paper cwpdda ... --load-cache results/preprocessed.npz
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 
+def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
     """Ensure CLI matches the run that produced the cache (if cache_spec present)."""
     spec = meta.get("cache_spec")
     if not spec:
@@ -52,6 +55,7 @@ import numpy as np
         raise RuntimeError(
             "Preprocess cache does not match current flags:\n"
             + "\n".join(bad)
+            + "\nOmit --load-cache to rebuild, or use matching arguments."
         )
 
 
@@ -116,7 +120,17 @@ def parse_args():
     )
 
     # Cache preprocessed tensors (skip slow load + DTW on repeat runs)
-
+    p.add_argument(
+        "--save-cache",
+        default=None,
+        metavar="PATH.npz",
+        help="After preprocessing, save arrays to PATH.npz and meta to PATH.json",
+    )
+    p.add_argument(
+        "--load-cache",
+        default=None,
+        metavar="PATH.npz",
+        help="Skip steps 1–2; load from PATH.npz (+ .json) written by --save-cache",
     )
     return p.parse_args()
 
@@ -155,11 +169,20 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
-    from preprocess import build_source_target
+    from preprocess import (
+        build_source_target,
+        load_preprocess_cache,
+        save_preprocess_cache,
     )
 
+    if args.load_cache:
+        if args.save_cache:
+            print("[info] --save-cache ignored when using --load-cache")
         print("\n" + "=" * 60)
+        print(" Steps 1–2 skipped — loading preprocess cache")
         print("=" * 60)
+        data = load_preprocess_cache(args.load_cache)
+        _validate_preprocess_cache(data["meta"], args)
     else:
         # ── 1. Load ───────────────────────────────────────────────────────────
         print("\n" + "=" * 60)
@@ -190,6 +213,9 @@ def main():
             "window_size": args.window_size,
             "horizon": args.horizon,
         }
+        if args.save_cache:
+            save_preprocess_cache(args.save_cache, data)
+            print(f"\n[cache] Saved preprocess bundle to {args.save_cache} (+ .json)")
 
     with open(out_dir / "meta.json", "w") as f:
         json.dump(data["meta"], f, indent=2)
