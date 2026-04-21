@@ -39,7 +39,15 @@ def rmse(y_true, y_pred):
     return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
 def mape(y_true, y_pred, eps=1e-8):
-    return float(np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + eps))))
+    # Exclude near-zero true values to avoid division explosion.
+    # Threshold = 1% of the data range, or 0.01 on [0,1]-normalised data.
+    scale = max(float(np.abs(y_true).max()), 1.0)
+    thresh = 0.01 * scale
+    mask = np.abs(y_true) > thresh
+    if mask.sum() == 0:
+        return float("nan")
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask])
+                                 / (np.abs(y_true[mask]) + eps))))
 
 def smape(y_true, y_pred, eps=1e-8):
     return float(np.mean(2 * np.abs(y_true - y_pred) / (np.abs(y_true) + np.abs(y_pred) + eps)))
@@ -49,9 +57,14 @@ def variance_err(y_true, y_pred):
 
 
 def cwpdda_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-    """MAE, MAPE (as %), RMSE — matches Table 3/4 of CWPDDA paper."""
-    y_true = y_true.squeeze()
-    y_pred = y_pred.squeeze()
+    """MAE, MAPE (as %), RMSE — matches Table 3/4 of CWPDDA paper.
+
+    Data is normalised to [0,1] during preprocessing but the paper reports
+    metrics on the 0-100% CPU utilisation scale.  Multiply by 100 before
+    computing so that MAE=2.4183 means 2.4% CPU error, matching the paper.
+    """
+    y_true = y_true.squeeze() * 100.0
+    y_pred = y_pred.squeeze() * 100.0
     return {
         "MAE":      mae(y_true, y_pred),
         "MAPE_%":   mape(y_true, y_pred) * 100,
