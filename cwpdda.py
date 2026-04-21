@@ -368,9 +368,9 @@ class CWPDDA(nn.Module):
         self.eval()
         if x_src is None:
             if self._src_ref is not None:
-                # Sample a batch-sized chunk from the source reference
+                # Sample WITH replacement so we always get exactly B rows
                 B = x_tgt.size(0)
-                idx = torch.randperm(len(self._src_ref))[:B]
+                idx = torch.randint(len(self._src_ref), (B,))
                 x_src = self._src_ref[idx].to(x_tgt.device)
             else:
                 x_src = x_tgt
@@ -404,8 +404,9 @@ class CWPDDA(nn.Module):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
             B = xb.size(0)
             if src_ref is not None:
-                idx = torch.randperm(len(src_ref))[:B]
-                xs = src_ref[idx]
+                # Sample WITH replacement so we always get exactly B rows
+                idx = torch.randint(len(src_ref), (B,))
+                xs = src_ref[idx].to(device)
             else:
                 xs = xb   # fallback: self-attention (not ideal)
             z, _, _ = self.extractor(xs, xb)
