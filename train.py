@@ -503,8 +503,10 @@ def train_mc_cwpdda(
             step += 1
         epoch_loss /= max(len(dl_s3), 1)
 
-        # Validation
+        # Validation — ensure source ref is set for correct cross-attention
         model.eval()
+        if model._src_ref is None:
+            model.register_source_ref(X_src)
         if len(X_val) == 0:
             val_mse = float("inf")
         else:
@@ -548,6 +550,10 @@ def train_mc_cwpdda(
 
     if best_state:
         model.load_state_dict(best_state)
+
+    # Register source reference so cross-attention works correctly at inference
+    model.register_source_ref(X_src)
+
     if ckpt_dir:
         torch.save(model.state_dict(), ckpt_dir / "mc_cwpdda.pt")
 

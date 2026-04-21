@@ -180,6 +180,7 @@ class MCCWPDDA(nn.Module):
         self.adapter          = DomainAdversarialAdapter(d_model, dropout)
         self.predictor        = WorkloadPredictor(d_model, lstm_hidden,
                                                    lstm_layers, dropout, horizon)
+        self._src_ref: Optional[torch.Tensor] = None
 
     # ── Freeze / unfreeze helpers for staged training ─────────────────────────
 
@@ -304,6 +305,19 @@ class MCCWPDDA(nn.Module):
         loss = Lc + self.lam4 * Lkl
         return loss, {"Lc": Lc.item(), "Lkl": Lkl.item(), "lam_mix": lam_mix}
 
+    # ── Source reference for inference ────────────────────────────────────────
+
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
+        """
+        Store a random subset of source windows for use at inference time.
+        During training z_shared = cross_attn(Q=src, K/V=tgt).
+        Without a source reference, inference degrades to self-attention.
+        Call once after training completes.
+        """
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
+        self._src_ref = torch.from_numpy(x_src_np[idx]).float()
+
     # ── Inference ─────────────────────────────────────────────────────────────
 
     @torch.no_grad()
@@ -312,10 +326,15 @@ class MCCWPDDA(nn.Module):
         x_tgt: torch.Tensor,
         x_src: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Predict workload.  Uses x_tgt as dummy source if x_src not provided."""
+        """Predict workload using stored source reference for cross-attention."""
         self.eval()
         if x_src is None:
-            x_src = x_tgt
+            if self._src_ref is not None:
+                B = x_tgt.size(0)
+                idx = torch.randint(len(self._src_ref), (B,))
+                x_src = self._src_ref[idx].to(x_tgt.device)
+            else:
+                x_src = x_tgt
         z_shared, _, _ = self.extractor(x_src, x_tgt)
         return self.predictor(z_shared)
 
@@ -326,15 +345,24 @@ class MCCWPDDA(nn.Module):
         device:     str,
         batch_size: int = 2048,
     ) -> np.ndarray:
-        """Chunked inference — avoids CUDA SDPA OOM on large test sets."""
+        """Chunked inference using stored source reference for cross-attention."""
         self.eval()
         n = len(x_np)
         if n == 0:
             h = int(self.predictor.fc.out_features)
             return np.empty((0, h), dtype=np.float32)
+
+        src_ref = self._src_ref.to(device) if self._src_ref is not None else None
+
         parts: list[np.ndarray] = []
         for i in range(0, n, batch_size):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
-            z, _, _ = self.extractor(xb, xb)
+            B = xb.size(0)
+            if src_ref is not None:
+                idx = torch.randint(len(src_ref), (B,))
+                xs = src_ref[idx]
+            else:
+                xs = xb
+            z, _, _ = self.extractor(xs, xb)
             parts.append(self.predictor(z).cpu().numpy())
         return np.concatenate(parts, axis=0)
