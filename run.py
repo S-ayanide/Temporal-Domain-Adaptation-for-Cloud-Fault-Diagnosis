@@ -216,18 +216,20 @@ def main():
         print(" Step 2/4 — Preprocess")
         print("=" * 60)
 
+        # DTW is MCTL-only — CWPDDA and MC-CWPDDA align via GRL/MMD, not DTW.
+        use_dtw = (args.paper == "mctl") and (not args.no_dtw)
         data = build_source_target(
             google_series, alibaba_series,
             window_size=args.window_size,
             horizon=args.horizon,
-            use_dtw=not args.no_dtw,
+            use_dtw=use_dtw,
             seed=args.seed,
         )
         data["meta"]["cache_spec"] = {
             "max_google": args.max_google,
             "max_alibaba": args.max_alibaba,
             "seed": args.seed,
-            "use_dtw": not args.no_dtw,
+            "use_dtw": use_dtw,
             "window_size": args.window_size,
             "horizon": args.horizon,
         }
