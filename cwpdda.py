@@ -327,7 +327,11 @@ class CWPDDA(nn.Module):
         # GRL makes the extractor produce domain-invariant private features.
         Ld = self.adapter.loss(z_src_priv, z_tgt_priv, lam)
 
-        loss = Ly + Lf + Ld
+        # Weighted sum — λ1 and λ2 keep auxiliary losses from swamping Ly.
+        # Lf normalises to ≈ -1.0 per call (see mmd_loss), so without weights
+        # it overwhelms the prediction signal (Ly ≈ 0.01 on [0,1] data).
+        lam1, lam2 = 0.01, 0.1
+        loss = Ly + lam1 * Lf + lam2 * Ld
 
         return loss, {
             "Ly": Ly.item(),
