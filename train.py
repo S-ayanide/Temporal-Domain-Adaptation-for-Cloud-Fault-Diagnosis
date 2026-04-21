@@ -151,8 +151,10 @@ def train_cwpdda(
 
         epoch_loss /= max(len(dl_s), 1)
 
-        # Validation (chunked: full X_val in one pass can exceed CUDA SDPA limits)
+        # Validation — register source ref so cross-attn works correctly
         model.eval()
+        if not hasattr(model, '_src_ref') or model._src_ref is None:
+            model.register_source_ref(X_src)
         val_bs = min(4096, max(batch_size * 16, 512))
         if len(X_val) == 0:
             val_mse = float("inf")
@@ -197,6 +199,9 @@ def train_cwpdda(
 
     if best_state:
         model.load_state_dict(best_state)
+
+    # Register source reference for correct cross-attention at inference time
+    model.register_source_ref(X_src)
 
     if ckpt_dir:
         torch.save(model.state_dict(), ckpt_dir / "cwpdda.pt")

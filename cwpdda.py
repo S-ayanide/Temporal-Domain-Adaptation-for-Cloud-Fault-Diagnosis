@@ -36,6 +36,7 @@ Metrics reported in paper (Table 3 / 4):
 
 from __future__ import annotations
 import math
+from typing import Optional
 
 import numpy as np
 import torch
@@ -288,6 +289,10 @@ class CWPDDA(nn.Module):
         self.predictor  = WorkloadPredictor(d_model, lstm_hidden, lstm_layers,
                                             dropout, horizon)
 
+        # Source reference batch for inference — set via register_source_ref()
+        # after training so that cross-attention at test time uses real source data.
+        self._src_ref: Optional[torch.Tensor] = None
+
     def forward(
         self,
         x_src: torch.Tensor,
@@ -340,15 +345,35 @@ class CWPDDA(nn.Module):
             "lam": lam,
         }
 
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
+        """
+        Store a random subset of source windows as a fixed reference for inference.
+
+        During training, z_shared = cross_attn(Q=source, K/V=target).
+        At test time we have no paired source, so we sample from the stored
+        reference to maintain the same cross-attention semantics.
+        Call this once after training completes.
+        """
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
+        self._src_ref = torch.from_numpy(x_src_np[idx]).float()
+
     @torch.no_grad()
-    def predict(self, x_tgt: torch.Tensor, x_src: torch.Tensor = None) -> torch.Tensor:
+    def predict(self, x_tgt: torch.Tensor, x_src: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Predict workload for target windows.
-        If x_src not provided, uses x_tgt as a dummy source (inference mode).
+        Uses stored source reference if x_src not provided.
+        Falls back to x_tgt (self-attention) only if no reference available.
         """
         self.eval()
         if x_src is None:
-            x_src = x_tgt
+            if self._src_ref is not None:
+                # Sample a batch-sized chunk from the source reference
+                B = x_tgt.size(0)
+                idx = torch.randperm(len(self._src_ref))[:B]
+                x_src = self._src_ref[idx].to(x_tgt.device)
+            else:
+                x_src = x_tgt
         z_shared, _, _ = self.extractor(x_src, x_tgt)
         return self.predictor(z_shared)
 
@@ -360,20 +385,29 @@ class CWPDDA(nn.Module):
         batch_size: int = 2048,
     ) -> np.ndarray:
         """
-        Inference on CPU/GPU without OOM or invalid CUDA kernel configs.
+        Inference on CPU/GPU using stored source reference for cross-attention.
 
-        Passing the full validation/test set in one forward (huge batch dim) can
-        break ``scaled_dot_product_attention`` on some GPUs with
-        ``RuntimeError: invalid configuration argument``.
+        Uses register_source_ref() source windows so that z_shared at test time
+        is computed the same way as during training (cross-attn Q=src, K/V=tgt).
         """
         self.eval()
         n = len(x_np)
         if n == 0:
             h = int(self.predictor.fc.out_features)
             return np.empty((0, h), dtype=np.float32)
+
+        src_ref = (self._src_ref.to(device)
+                   if self._src_ref is not None else None)
+
         parts: list[np.ndarray] = []
         for i in range(0, n, batch_size):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
-            z, _, _ = self.extractor(xb, xb)
+            B = xb.size(0)
+            if src_ref is not None:
+                idx = torch.randperm(len(src_ref))[:B]
+                xs = src_ref[idx]
+            else:
+                xs = xb   # fallback: self-attention (not ideal)
+            z, _, _ = self.extractor(xs, xb)
             parts.append(self.predictor(z).cpu().numpy())
         return np.concatenate(parts, axis=0)
