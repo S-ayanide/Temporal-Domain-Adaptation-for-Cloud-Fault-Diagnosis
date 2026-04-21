@@ -317,11 +317,15 @@ class CWPDDA(nn.Module):
         # Ly: prediction MSE on target (Eq. 15)
         Ly = F.mse_loss(pred, y_tgt)
 
-        # Lf: feature extractor loss — src private vs shared (Eq. 10)
-        Lf = self.extractor.mmd_loss(z_src_priv, z_shared)
+        # Lf: feature disentanglement — push BOTH private features away from
+        # shared so private ≠ shared (Eq. 10).  Apply to both source and target.
+        Lf = (self.extractor.mmd_loss(z_src_priv, z_shared) +
+              self.extractor.mmd_loss(z_tgt_priv, z_shared))
 
-        # Ld: domain adversarial loss (Eq. 12, via GRL)
-        Ld = self.adapter.loss(z_shared, z_shared, lam)  # symmetrical
+        # Ld: domain adversarial loss (Eq. 12, via GRL).
+        # Discriminator sees source-private (label=0) vs target-private (label=1).
+        # GRL makes the extractor produce domain-invariant private features.
+        Ld = self.adapter.loss(z_src_priv, z_tgt_priv, lam)
 
         loss = Ly + Lf + Ld
 

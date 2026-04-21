@@ -70,8 +70,8 @@ def _cuda_device_index(device: str) -> int:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--paper",   default="cwpdda",
-                   choices=["cwpdda", "mctl", "both"],
-                   help="Which paper to replicate")
+                   choices=["cwpdda", "mctl", "both", "mc_cwpdda"],
+                   help="Which model to run (mc_cwpdda = novel contribution)")
     p.add_argument("--google",  default="data/raw/google")
     p.add_argument("--alibaba", default="data/raw")
     p.add_argument("--out",     default="results")
@@ -105,11 +105,26 @@ def parse_args():
     p.add_argument("--stage2a-epochs", type=int, default=50)
     p.add_argument("--stage2b-epochs", type=int, default=50)
 
+    # MC-CWPDDA hyperparams (three-stage curriculum)
+    p.add_argument("--mc-stage1-epochs", type=int, default=30,
+                   help="MC-CWPDDA Stage 1: source pre-training epochs")
+    p.add_argument("--mc-stage2-epochs", type=int, default=50,
+                   help="MC-CWPDDA Stage 2: contrastive alignment epochs")
+    p.add_argument("--mc-stage3-epochs", type=int, default=100,
+                   help="MC-CWPDDA Stage 3: joint fine-tuning epochs")
+    p.add_argument("--proj-dim", type=int, default=64,
+                   help="MC-CWPDDA contrastive head projection dimension")
+
     # Convenience flags
     p.add_argument("--quick",        action="store_true",
                    help="Few epochs, skip slow baselines — for smoke testing")
     p.add_argument("--skip-gluonts", action="store_true",
                    help="Skip DeepAR/DRP/MQF2 baselines (require gluonts)")
+    p.add_argument("--checkpoint-every", type=int, default=10, metavar="N",
+                   help="Save a recovery checkpoint every N epochs (default 10)")
+    p.add_argument("--resume",       default=None, metavar="PATH",
+                   help="Resume CWPDDA training from a recovery checkpoint "
+                        "(e.g. checkpoints/cwpdda_resume.pt)")
     p.add_argument(
         "--eval-max-test",
         type=int,
@@ -144,6 +159,9 @@ def main():
         args.stage1_epochs = 5
         args.stage2a_epochs = 5
         args.stage2b_epochs = 5
+        args.mc_stage1_epochs = 5
+        args.mc_stage2_epochs = 5
+        args.mc_stage3_epochs = 10
         args.skip_gluonts = True
         args.max_google   = 500
         args.max_alibaba  = 500
@@ -224,7 +242,7 @@ def main():
     print("\n" + "=" * 60)
     print(" Step 3/4 — Train")
     print("=" * 60)
-    from train import train_cwpdda, train_mctl
+    from train import train_cwpdda, train_mctl, train_mc_cwpdda
 
     results_all = {}
 
@@ -247,6 +265,8 @@ def main():
             patience=args.patience,
             save_dir=str(ckpt_dir),
             verbose=True,
+            checkpoint_every=args.checkpoint_every,
+            resume_from=args.resume,
         )
 
     if args.paper in ("mctl", "both"):
@@ -266,6 +286,32 @@ def main():
             lr=args.lr,
             save_dir=str(ckpt_dir),
             verbose=True,
+        )
+
+    if args.paper == "mc_cwpdda":
+        from mc_cwpdda import MCCWPDDA
+        mc_cwpdda = MCCWPDDA(
+            window_size=args.window_size,
+            d_model=args.d_model,
+            lstm_hidden=args.lstm_hidden,
+            lstm_layers=args.lstm_layers,
+            dropout=args.dropout,
+            horizon=args.horizon,
+            proj_dim=args.proj_dim,
+        )
+        train_mc_cwpdda(
+            mc_cwpdda, data,
+            device=args.device,
+            stage1_epochs=args.mc_stage1_epochs,
+            stage2_epochs=args.mc_stage2_epochs,
+            stage3_epochs=args.mc_stage3_epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            patience=args.patience,
+            save_dir=str(ckpt_dir),
+            verbose=True,
+            checkpoint_every=args.checkpoint_every,
+            resume_from=args.resume,
         )
 
     # ── 4. Evaluate ───────────────────────────────────────────────────────────
@@ -327,6 +373,47 @@ def main():
         results_all["mctl"] = results_mctl
         with open(out_dir / "mctl_results.json", "w") as f:
             json.dump(results_mctl, f, indent=2)
+
+    if args.paper == "mc_cwpdda":
+        # Reuse CWPDDA evaluation pipeline — MC-CWPDDA has the same predict interface
+        print("\n[MC-CWPDDA vs baselines]")
+        results_mc = run_cwpdda_comparison(
+            mc_cwpdda, data, device=args.device,
+            skip_gluonts=args.skip_gluonts,
+            max_test_windows=args.eval_max_test,
+            subsample_seed=args.seed,
+        )
+        # Override the model label in the results dict
+        if "CWPDDA" in results_mc:
+            results_mc["MC-CWPDDA"] = results_mc.pop("CWPDDA")
+        print_cwpdda_table(results_mc)
+        results_all["mc_cwpdda"] = results_mc
+        mc_json = out_dir / "mc_cwpdda_results.json"
+        with open(mc_json, "w") as f:
+            json.dump(results_mc, f, indent=2)
+        print(f"\n  Saved metrics JSON: {mc_json.resolve()}", flush=True)
+
+        lines = [
+            "MC-CWPDDA Results — Google → Alibaba 2017",
+            "Baselines: CWPDDA MAE=2.4183  MAPE=8.66%  RMSE=2.5859",
+            "",
+            f"{'Method':<14}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}",
+            "-" * 47,
+        ]
+        for name, m in results_mc.items():
+            lines.append(
+                f"{name:<14}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}"
+            )
+        table_path = out_dir / "mc_cwpdda_table.txt"
+        table_path.write_text("\n".join(lines))
+        print(f"  Saved table:        {table_path.resolve()}", flush=True)
+        if "MC-CWPDDA" in results_mc:
+            r = results_mc["MC-CWPDDA"]
+            print(
+                f"\n  MC-CWPDDA test — MAE={r['MAE']:.4f}  "
+                f"MAPE={r['MAPE_%']:.2f}%  RMSE={r['RMSE']:.4f}",
+                flush=True,
+            )
 
     print(f"\nTotal time: {time.time() - t0:.0f}s")
     print(f"Results saved to {out_dir}/")
