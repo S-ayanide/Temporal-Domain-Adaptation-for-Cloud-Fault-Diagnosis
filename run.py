@@ -6,14 +6,14 @@ Replicate either CWPDDA or MCTL (or both) from a single command.
 Usage:
     # Replicate CWPDDA (Wang et al., Euro-Par 2025) — YOUR MAIN TARGET
     python run.py --paper cwpdda \
-        --google  data/raw/google \
-        --alibaba data/raw \
+        --google  raw/google \
+        --alibaba raw/alibaba \
         --device  cuda
 
     # Replicate MCTL (Zuo et al., Computing 2025)
     python run.py --paper mctl \
-        --google  data/raw/google \
-        --alibaba data/raw \
+        --google  raw/google \
+        --alibaba raw/alibaba \
         --device  cuda
 
     # Both
@@ -72,8 +72,8 @@ def parse_args():
     p.add_argument("--paper",   default="cwpdda",
                    choices=["cwpdda", "mctl", "both", "mc_cwpdda"],
                    help="Which model to run (mc_cwpdda = novel contribution)")
-    p.add_argument("--google",  default="data/raw/google")
-    p.add_argument("--alibaba", default="data/raw")
+    p.add_argument("--google",  default="raw/google")
+    p.add_argument("--alibaba", default="raw/alibaba")
     p.add_argument("--out",     default="results")
     p.add_argument("--ckpt",    default="checkpoints")
     p.add_argument("--device",  default="cpu")
