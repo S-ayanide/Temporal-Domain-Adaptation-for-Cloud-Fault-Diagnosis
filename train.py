@@ -383,31 +383,32 @@ def train_mc_cwpdda(
         print(f"\n[MC-CWPDDA Stage 1] Source pre-training — {stage1_epochs} epochs")
 
     model.unfreeze_all()
-    tmp_head = nn.Linear(model.extractor.out_dim, y_src.shape[1]).to(device)
+    # Train source branch + actual predictor (not a tmp head) so the LSTM
+    # has useful weights before Stage 3.  Grad for proj_tgt / cross_attn
+    # flows but those params are absent from opt1, so they stay unchanged.
     opt1 = torch.optim.Adam(
         list(model.extractor.proj_src.parameters()) +
         list(model.extractor.self_attn_src.parameters()) +
-        list(tmp_head.parameters()),
+        list(model.predictor.parameters()),
         lr=lr,
     )
 
     dl_src = _loader(X_src, y_src, batch_size)
     for epoch in range(1, stage1_epochs + 1):
-        model.train(); tmp_head.train()
+        model.train()
         ep_loss = 0.0
         for xb, yb in dl_src:
             xb, yb = xb.to(device), yb.to(device)
             opt1.zero_grad()
-            # Use source branch only: extractor(xb, xb) feeds xb as both branches
+            # Feed source as both Q and K/V so only proj_src + self_attn_src
+            # accumulate useful gradients; cross_attn / proj_tgt not in opt1.
             z_shared, _, _ = model.extractor(xb, xb)
-            loss = F.mse_loss(tmp_head(z_shared), yb)
+            loss = F.mse_loss(model.predictor(z_shared), yb)
             loss.backward()
             opt1.step()
             ep_loss += loss.item()
         if verbose and epoch % 10 == 0:
             print(f"  epoch {epoch:3d}/{stage1_epochs}  mse={ep_loss/max(len(dl_src),1):.5f}")
-
-    del tmp_head  # discard temp head
 
     # ── Stage 2: Contrastive alignment ───────────────────────────────────────
     if verbose:
@@ -452,7 +453,7 @@ def train_mc_cwpdda(
         print(f"\n[MC-CWPDDA Stage 3] Joint fine-tuning — up to {stage3_epochs} epochs")
 
     model.unfreeze_all()
-    opt3   = torch.optim.Adam(model.parameters(), lr=lr * 0.1)
+    opt3   = torch.optim.Adam(model.parameters(), lr=lr * 0.3)
     sched3 = torch.optim.lr_scheduler.ReduceLROnPlateau(opt3, patience=5, factor=0.5)
 
     dl_s3 = DataLoader(

@@ -156,7 +156,7 @@ class MCCWPDDA(nn.Module):
         proj_dim:     int   = 64,    # Gc output dimension
         alpha:        float = 10.0,  # GRL schedule (Table 2 of CWPDDA)
         beta:         float = 0.75,
-        lam1:         float = 0.1,   # Lf weight (disentanglement)
+        lam1:         float = 0.01,  # Lf weight (disentanglement) — matches CWPDDA paper
         lam2:         float = 0.1,   # Ld weight (adversarial)
         lam3:         float = 0.1,   # Lc weight (PAPN contrastive)
         lam4:         float = 0.05,  # Lkl weight (KL alignment)
