@@ -126,20 +126,37 @@ class FeatureExtractor(nn.Module):
     Target branch:        self-attention on target   → z_tgt_private
     Source-Target branch: cross-attention            → z_shared
 
+    Paper Section 3.1: "three branches with SHARED attention weights" — Eq. 2
+    uses W^Q, W^K, W^V without domain subscripts, meaning one SelfAttentionBlock
+    is used for both source and target branches.  The cross-attention has its own
+    weight matrices W^Qs, W^Kt, W^Vt (Eq. 6), kept separate.
+
+    shared_weights=True  (CWPDDA default): faithful to paper — one proj, one self_attn.
+    shared_weights=False (MC-CWPDDA):      separate proj_src/proj_tgt/self_attn_src/
+                                           self_attn_tgt for staged-curriculum freezing.
+
     Input projection: (batch, window_size) → (batch, window_size, d_model)
     Pool over sequence: (batch, d_model)
     """
 
-    def __init__(self, window_size: int, d_model: int = 64, dropout: float = 0.1):
+    def __init__(self, window_size: int, d_model: int = 64, dropout: float = 0.1,
+                 shared_weights: bool = True):
         super().__init__()
-        self.proj_src = nn.Linear(1, d_model)
-        self.proj_tgt = nn.Linear(1, d_model)
+        self._shared = shared_weights
 
-        self.self_attn_src = SelfAttentionBlock(d_model, dropout)
-        self.self_attn_tgt = SelfAttentionBlock(d_model, dropout)
-        self.cross_attn    = CrossAttentionBlock(d_model, dropout)
+        if shared_weights:
+            # Paper-faithful: one projection and one self-attention shared across branches
+            self.proj      = nn.Linear(1, d_model)
+            self.self_attn = SelfAttentionBlock(d_model, dropout)
+        else:
+            # MC-CWPDDA: separate per-domain projections and attention for staged freezing
+            self.proj_src      = nn.Linear(1, d_model)
+            self.proj_tgt      = nn.Linear(1, d_model)
+            self.self_attn_src = SelfAttentionBlock(d_model, dropout)
+            self.self_attn_tgt = SelfAttentionBlock(d_model, dropout)
 
-        self.out_dim = d_model
+        self.cross_attn = CrossAttentionBlock(d_model, dropout)
+        self.out_dim    = d_model
 
     def forward(
         self,
@@ -148,20 +165,22 @@ class FeatureExtractor(nn.Module):
     ):
         """
         Returns:
-            z_shared: (batch, d_model)  — used by predictor and discriminator
+            z_shared:      (batch, d_model)  — used by predictor and discriminator
             z_src_private: (batch, d_model)
             z_tgt_private: (batch, d_model)
         """
-        # (batch, W, 1) → (batch, W, d_model)
-        hs = self.proj_src(x_src.unsqueeze(-1))
-        ht = self.proj_tgt(x_tgt.unsqueeze(-1))
+        if self._shared:
+            hs = self.proj(x_src.unsqueeze(-1))          # (batch, W, d_model)
+            ht = self.proj(x_tgt.unsqueeze(-1))
+            z_src_private = self.self_attn(hs).mean(dim=1)
+            z_tgt_private = self.self_attn(ht).mean(dim=1)
+        else:
+            hs = self.proj_src(x_src.unsqueeze(-1))
+            ht = self.proj_tgt(x_tgt.unsqueeze(-1))
+            z_src_private = self.self_attn_src(hs).mean(dim=1)
+            z_tgt_private = self.self_attn_tgt(ht).mean(dim=1)
 
-        # Private features
-        z_src_private = self.self_attn_src(hs).mean(dim=1)   # (batch, d_model)
-        z_tgt_private = self.self_attn_tgt(ht).mean(dim=1)
-
-        # Shared features via cross-attention
-        z_shared = self.cross_attn(hs, ht).mean(dim=1)       # (batch, d_model)
+        z_shared = self.cross_attn(hs, ht).mean(dim=1)  # (batch, d_model)
 
         return z_shared, z_src_private, z_tgt_private
 
@@ -171,13 +190,13 @@ class FeatureExtractor(nn.Module):
         z_shared: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Feature extractor loss (Eq. 10): 1 / MMD(private, shared).
-        We want to MAXIMISE MMD, so the loss is -MMD (minimised by optimiser).
-        Guards against zero-division.
+        Feature extractor loss Eq. 10: Lf = 1 / MMD(SelfAttention, CrossAttention).
+        Minimising 1/MMD is equivalent to maximising MMD — pushes private features
+        away from shared so the two carry distinct information.
         """
         diff = z_private.mean(0) - z_shared.mean(0)
-        mmd = (diff ** 2).sum()
-        return -mmd / (mmd.detach() + 1e-8)     # normalised, maximised
+        mmd  = (diff ** 2).sum()
+        return 1.0 / (mmd + 1e-8)    # Eq. 10 faithful: minimise 1/MMD
 
 
 # ─── Domain Adversarial Adapter  Gd(·) ───────────────────────────────────────

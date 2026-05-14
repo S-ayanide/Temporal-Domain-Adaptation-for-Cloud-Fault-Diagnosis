@@ -175,7 +175,10 @@ class MCCWPDDA(nn.Module):
         self.n_neg       = n_neg
         self.tau         = tau
 
-        self.extractor        = FeatureExtractor(window_size, d_model, dropout)
+        # shared_weights=False: MC-CWPDDA needs separate per-domain branches
+        # so Stage 1 can freeze only the source branch during contrastive alignment.
+        self.extractor        = FeatureExtractor(window_size, d_model, dropout,
+                                                  shared_weights=False)
         self.contrastive_head = ContrastiveHead(d_model, proj_dim)
         self.adapter          = DomainAdversarialAdapter(d_model, dropout)
         self.predictor        = WorkloadPredictor(d_model, lstm_hidden,
