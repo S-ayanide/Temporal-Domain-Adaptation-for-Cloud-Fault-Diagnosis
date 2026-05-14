@@ -65,6 +65,9 @@ class ContrastiveHead(nn.Module):
         )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
+        # z may be (batch, W, d_model) when coming from cross-attention — pool first
+        if z.dim() == 3:
+            z = z.mean(dim=1)  # (batch, d_model)
         return F.normalize(self.net(z), dim=-1)
 
 
