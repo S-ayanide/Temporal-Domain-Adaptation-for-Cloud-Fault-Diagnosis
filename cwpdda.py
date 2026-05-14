@@ -99,9 +99,20 @@ class SelfAttentionBlock(nn.Module):
 
 class CrossAttentionBlock(nn.Module):
     """
-    Cross-attention: Q from source, K/V from target (paper Eqs. 6-9).
-    Input:  xs (batch, seq_s, d_model),  xt (batch, seq_t, d_model)
-    Output: (batch, seq_s, d_model)  — shared features
+    Cross-attention: Q from target, K/V from source (Eqs. 6-9).
+    Input:  q  (batch, W, d_model) — target (what to query for)
+            kv (batch, W, d_model) — source (knowledge to extract from)
+    Output: (batch, W, d_model)  — target sequence enriched with source knowledge
+
+    WHY Q=target, K=V=source (not the reverse):
+      At inference we replace the source with a canonical mean window broadcast
+      to (batch, W, d_model) — all 24 source positions are identical.  If Q were
+      source (identical × 24), cross-attention would return the same vector at
+      every timestep, giving the LSTM a constant sequence that can only predict a
+      constant value ≈ dataset mean.  With Q=target, each of the 24 target
+      positions is distinct, so the LSTM still sees a temporally-varying sequence
+      and can model dynamics.  The canonical source serves as a fixed "knowledge
+      bank" (K/V), which is a natural inference-time approximation.
     """
 
     def __init__(self, d_model: int, dropout: float = 0.1):
@@ -110,10 +121,10 @@ class CrossAttentionBlock(nn.Module):
                                           dropout=dropout, batch_first=True)
         self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, xs: torch.Tensor, xt: torch.Tensor) -> torch.Tensor:
-        # Q=source, K=V=target — cross-attention as in paper
-        out, _ = self.attn(xs, xt, xt, need_weights=False)
-        return self.norm(xs + out)
+    def forward(self, q: torch.Tensor, kv: torch.Tensor) -> torch.Tensor:
+        # Q=target queries into source K/V; residual on target preserves temporal info
+        out, _ = self.attn(q, kv, kv, need_weights=False)
+        return self.norm(q + out)
 
 
 # ─── Feature Extractor  Gf(·) ─────────────────────────────────────────────────
@@ -170,21 +181,25 @@ class FeatureExtractor(nn.Module):
             z_tgt_private: (batch, d_model)    — pooled, used for MMD and discriminator
         """
         if self._shared:
-            hs = self.proj(x_src.unsqueeze(-1))          # (batch, W, d_model)
+            hs = self.proj(x_src.unsqueeze(-1))              # (batch, W, d_model)
             ht = self.proj(x_tgt.unsqueeze(-1))
-            z_src_private = self.self_attn(hs).mean(dim=1)   # (batch, d_model)
-            z_tgt_private = self.self_attn(ht).mean(dim=1)
+            hs_sa = self.self_attn(hs)                        # source self-attended
+            ht_sa = self.self_attn(ht)                        # target self-attended
+            z_src_private = hs_sa.mean(dim=1)                 # (batch, d_model)
+            z_tgt_private = ht_sa.mean(dim=1)
         else:
             hs = self.proj_src(x_src.unsqueeze(-1))
             ht = self.proj_tgt(x_tgt.unsqueeze(-1))
-            z_src_private = self.self_attn_src(hs).mean(dim=1)
-            z_tgt_private = self.self_attn_tgt(ht).mean(dim=1)
+            hs_sa = self.self_attn_src(hs)
+            ht_sa = self.self_attn_tgt(ht)
+            z_src_private = hs_sa.mean(dim=1)
+            z_tgt_private = ht_sa.mean(dim=1)
 
-        # Keep full sequence for LSTM — do NOT pool here.
-        # cross_attn output: (batch, W, d_model) — 24 attention-enhanced timesteps.
-        # Pooling before the LSTM discards all temporal structure, leaving the
-        # predictor with a single vector (equivalent to a 2-layer MLP).
-        z_shared = self.cross_attn(hs, ht)               # (batch, W, d_model)
+        # Cross-attention: Q=target (diverse 24 timesteps), K/V=source (knowledge bank).
+        # Using self-attended features so cross-attn sees refined domain representations.
+        # At inference, K/V = canonical mean source broadcast — target Q stays diverse,
+        # so the LSTM still receives 24 distinct timesteps and can model dynamics.
+        z_shared = self.cross_attn(ht_sa, hs_sa)             # (batch, W, d_model)
 
         return z_shared, z_src_private, z_tgt_private
 
@@ -381,13 +396,14 @@ class CWPDDA(nn.Module):
         """
         Compute a single canonical source query vector for deterministic inference.
 
-        During training, z_shared = cross_attn(Q=source, K/V=target) with specific
-        paired batches.  At test time we have no paired source.
+        During training, z_shared = cross_attn(Q=target, K/V=source) with random
+        source batches paired with each target batch.  At test time there is no
+        paired source, so we substitute the MEAN of a random subset of source windows
+        as a fixed K/V "knowledge bank" broadcast to the batch.
 
-        We store the MEAN of a random subset of source windows as a single canonical
-        window (shape: (1, W)) and broadcast it to match each target batch.  This is
-        deterministic — the same target window always gets the same prediction —
-        unlike random per-batch sampling which introduces noise.
+        Q=target means each target window's 24 distinct timesteps drive the queries,
+        so z_shared stays temporally diverse at inference even with a constant source.
+        This is deterministic — same target window always gets same prediction.
         """
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
@@ -424,7 +440,7 @@ class CWPDDA(nn.Module):
         Inference on CPU/GPU using stored source reference for cross-attention.
 
         Uses register_source_ref() source windows so that z_shared at test time
-        is computed the same way as during training (cross-attn Q=src, K/V=tgt).
+        is computed the same way as during training (cross-attn Q=tgt, K/V=src).
         """
         self.eval()
         n = len(x_np)
