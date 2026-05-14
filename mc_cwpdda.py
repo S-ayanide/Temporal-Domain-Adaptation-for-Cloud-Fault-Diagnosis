@@ -315,7 +315,9 @@ class MCCWPDDA(nn.Module):
         """
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        self._src_ref = torch.from_numpy(x_src_np[idx]).float()
+        subset = x_src_np[idx]
+        canonical = subset.mean(axis=0, keepdims=True)     # (1, W) canonical source
+        self._src_ref = torch.from_numpy(canonical).float()
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
@@ -330,8 +332,7 @@ class MCCWPDDA(nn.Module):
         if x_src is None:
             if self._src_ref is not None:
                 B = x_tgt.size(0)
-                idx = torch.randint(len(self._src_ref), (B,))
-                x_src = self._src_ref[idx].to(x_tgt.device)
+                x_src = self._src_ref.to(x_tgt.device).expand(B, -1)
             else:
                 x_src = x_tgt
         z_shared, _, _ = self.extractor(x_src, x_tgt)
@@ -344,7 +345,7 @@ class MCCWPDDA(nn.Module):
         device:     str,
         batch_size: int = 2048,
     ) -> np.ndarray:
-        """Chunked inference using stored source reference for cross-attention."""
+        """Chunked inference using canonical mean source for cross-attention."""
         self.eval()
         n = len(x_np)
         if n == 0:
@@ -358,8 +359,7 @@ class MCCWPDDA(nn.Module):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
             B = xb.size(0)
             if src_ref is not None:
-                idx = torch.randint(len(src_ref), (B,))
-                xs = src_ref[idx]
+                xs = src_ref.expand(B, -1)
             else:
                 xs = xb
             z, _, _ = self.extractor(xs, xb)

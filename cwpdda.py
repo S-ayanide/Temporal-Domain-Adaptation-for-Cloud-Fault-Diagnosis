@@ -372,16 +372,21 @@ class CWPDDA(nn.Module):
 
     def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
         """
-        Store a random subset of source windows as a fixed reference for inference.
+        Compute a single canonical source query vector for deterministic inference.
 
-        During training, z_shared = cross_attn(Q=source, K/V=target).
-        At test time we have no paired source, so we sample from the stored
-        reference to maintain the same cross-attention semantics.
-        Call this once after training completes.
+        During training, z_shared = cross_attn(Q=source, K/V=target) with specific
+        paired batches.  At test time we have no paired source.
+
+        We store the MEAN of a random subset of source windows as a single canonical
+        window (shape: (1, W)) and broadcast it to match each target batch.  This is
+        deterministic — the same target window always gets the same prediction —
+        unlike random per-batch sampling which introduces noise.
         """
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        self._src_ref = torch.from_numpy(x_src_np[idx]).float()
+        subset = x_src_np[idx]                              # (n, W)
+        canonical = subset.mean(axis=0, keepdims=True)     # (1, W) — mean source
+        self._src_ref = torch.from_numpy(canonical).float()
 
     @torch.no_grad()
     def predict(self, x_tgt: torch.Tensor, x_src: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -393,10 +398,9 @@ class CWPDDA(nn.Module):
         self.eval()
         if x_src is None:
             if self._src_ref is not None:
-                # Sample WITH replacement so we always get exactly B rows
+                # Broadcast canonical source to match target batch size
                 B = x_tgt.size(0)
-                idx = torch.randint(len(self._src_ref), (B,))
-                x_src = self._src_ref[idx].to(x_tgt.device)
+                x_src = self._src_ref.to(x_tgt.device).expand(B, -1)
             else:
                 x_src = x_tgt
         z_shared, _, _ = self.extractor(x_src, x_tgt)
@@ -429,11 +433,10 @@ class CWPDDA(nn.Module):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
             B = xb.size(0)
             if src_ref is not None:
-                # Sample WITH replacement so we always get exactly B rows
-                idx = torch.randint(len(src_ref), (B,))
-                xs = src_ref[idx].to(device)
+                # Broadcast canonical mean source — deterministic, no per-batch noise
+                xs = src_ref.to(device).expand(B, -1)
             else:
-                xs = xb   # fallback: self-attention (not ideal)
+                xs = xb   # fallback: self-attention
             z, _, _ = self.extractor(xs, xb)
             parts.append(self.predictor(z).cpu().numpy())
         return np.concatenate(parts, axis=0)
