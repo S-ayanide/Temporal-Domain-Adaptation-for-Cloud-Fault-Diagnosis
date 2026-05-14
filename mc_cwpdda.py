@@ -204,12 +204,10 @@ class MCCWPDDA(nn.Module):
         self,
         x_src: torch.Tensor,
         x_tgt: torch.Tensor,
-        lam_grl: float = 1.0,
     ) -> Tuple[torch.Tensor, ...]:
         z_shared, z_src_priv, z_tgt_priv = self.extractor(x_src, x_tgt)
-        domain_pred  = self.adapter(z_shared, lam_grl)
         workload_pred = self.predictor(z_shared)
-        return workload_pred, domain_pred, z_shared, z_src_priv, z_tgt_priv
+        return workload_pred, z_shared, z_src_priv, z_tgt_priv
 
     # ── Stage 3 full loss ─────────────────────────────────────────────────────
 
@@ -230,9 +228,7 @@ class MCCWPDDA(nn.Module):
         lam_grl = grl_lambda(step, total_steps, self.alpha, self.beta)
 
         # ── Main forward ──────────────────────────────────────────────────────
-        pred, _, z_shared, z_src_priv, z_tgt_priv = self.forward(
-            x_src, x_tgt, lam_grl
-        )
+        pred, z_shared, z_src_priv, z_tgt_priv = self.forward(x_src, x_tgt)
 
         # Ly: target prediction MSE
         Ly = F.mse_loss(pred, y_tgt)

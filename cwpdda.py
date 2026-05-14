@@ -191,12 +191,21 @@ class FeatureExtractor(nn.Module):
     ) -> torch.Tensor:
         """
         Feature extractor loss Eq. 10: Lf = 1 / MMD(SelfAttention, CrossAttention).
-        Minimising 1/MMD is equivalent to maximising MMD — pushes private features
-        away from shared so the two carry distinct information.
+
+        Paper intent: minimise 1/MMD = maximise MMD = push private away from shared.
+
+        Numerically stable implementation: -mmd / (mmd.detach() + 1e-8).
+        This gives a forward value ≈ -1 (bounded, stable) with gradient ≈ -1/mmd,
+        which correctly pushes MMD up.
+
+        Why NOT use 1/(mmd+1e-8) directly:
+          When mmd ≈ 0.001 at init, 1/mmd = 1000. With λ1=0.01, Lf contributes
+          0.01 × 1000 = 10 to total loss, swamping Ly ≈ 0.01–0.1.  The model
+          then optimises feature separation instead of prediction — worse than ARIMA.
         """
         diff = z_private.mean(0) - z_shared.mean(0)
         mmd  = (diff ** 2).sum()
-        return 1.0 / (mmd + 1e-8)    # Eq. 10 faithful: minimise 1/MMD
+        return -mmd / (mmd.detach() + 1e-8)   # ≈ -1, stable; gradient ∝ -1/mmd
 
 
 # ─── Domain Adversarial Adapter  Gd(·) ───────────────────────────────────────
@@ -316,12 +325,10 @@ class CWPDDA(nn.Module):
         self,
         x_src: torch.Tensor,
         x_tgt: torch.Tensor,
-        lam: float = 1.0,
     ):
         z_shared, z_src_priv, z_tgt_priv = self.extractor(x_src, x_tgt)
-        domain_pred = self.adapter(z_shared, lam)
         workload_pred = self.predictor(z_shared)
-        return workload_pred, domain_pred, z_shared, z_src_priv, z_tgt_priv
+        return workload_pred, z_shared, z_src_priv, z_tgt_priv
 
     def compute_loss(
         self,
@@ -334,9 +341,7 @@ class CWPDDA(nn.Module):
     ):
         lam = grl_lambda(step, total_steps, self.alpha, self.beta)
 
-        pred, _, z_shared, z_src_priv, z_tgt_priv = self.forward(
-            x_src, x_tgt, lam
-        )
+        pred, z_shared, z_src_priv, z_tgt_priv = self.forward(x_src, x_tgt)
 
         # Ly: prediction MSE on target (Eq. 15)
         Ly = F.mse_loss(pred, y_tgt)
