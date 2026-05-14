@@ -135,6 +135,7 @@ def train_cwpdda(
     for epoch in range(start_epoch, epochs + 1):
         model.train()
         epoch_loss = 0.0
+        epoch_Ly = 0.0; epoch_Lf = 0.0; epoch_Ld = 0.0
 
         for (xs, ys), (xt, yt) in zip(dl_s, dl_t):
             xs, ys = xs.to(device), ys.to(device)
@@ -147,9 +148,16 @@ def train_cwpdda(
             opt.step()
 
             epoch_loss += loss.item()
+            epoch_Ly   += info["Ly"]
+            epoch_Lf   += info["Lf"]
+            epoch_Ld   += info["Ld"]
             step += 1
 
-        epoch_loss /= max(len(dl_s), 1)
+        n_batches = max(len(dl_s), 1)
+        epoch_loss /= n_batches
+        epoch_Ly   /= n_batches
+        epoch_Lf   /= n_batches
+        epoch_Ld   /= n_batches
 
         # Validation — register source ref so cross-attn works correctly
         model.eval()
@@ -175,7 +183,10 @@ def train_cwpdda(
             no_improve += 1
 
         if verbose and epoch % 20 == 0:
-            print(f"  epoch {epoch:3d}/{epochs}  loss={epoch_loss:.5f}  val_mse={val_mse:.5f}")
+            print(f"  epoch {epoch:3d}/{epochs}  "
+                  f"loss={epoch_loss:.5f}  "
+                  f"Ly={epoch_Ly:.5f}  Lf={epoch_Lf:.4f}  Ld={epoch_Ld:.4f}  "
+                  f"val_mse={val_mse:.5f}")
 
         # Periodic recovery checkpoint — survives server timeouts
         if ckpt_dir and checkpoint_every > 0 and epoch % checkpoint_every == 0:
