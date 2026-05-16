@@ -89,15 +89,20 @@ def train_cwpdda(
     X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
     X_val, y_val = data["tgt_val_X"],   data["tgt_val_y"]
 
-    n = min(len(X_src), len(X_tr))
-    dl_s = DataLoader(TensorDataset(torch.from_numpy(X_src[:n]).float(),
-                                     torch.from_numpy(y_src[:n]).float()),
+    # Use the FULL source dataset — do NOT truncate to min(src, tgt).
+    # In the few-shot regime, target may have only ~5-20k windows while source
+    # has 125k+.  Limiting source to min() wastes 90% of the Google data.
+    # zip() stops at the shorter DataLoader (target), so each epoch we see
+    # len(dl_t) random source batches from the full 125k — different ones each
+    # epoch due to shuffle=True.
+    dl_s = DataLoader(TensorDataset(torch.from_numpy(X_src).float(),
+                                     torch.from_numpy(y_src).float()),
                       batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=False, num_workers=0)
-    dl_t = DataLoader(TensorDataset(torch.from_numpy(X_tr[:n]).float(),
-                                     torch.from_numpy(y_tr[:n]).float()),
+    dl_t = DataLoader(TensorDataset(torch.from_numpy(X_tr).float(),
+                                     torch.from_numpy(y_tr).float()),
                       batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=False, num_workers=0)
 
-    total_steps = epochs * min(len(dl_s), len(dl_t))
+    total_steps = epochs * len(dl_t)  # GRL schedule based on target batches
     step = 0
 
     best_val, best_state, no_improve = float("inf"), None, 0

@@ -210,6 +210,7 @@ def build_source_target(
     seed: int = 42,
     max_windows: int = MAX_WINDOWS_PER_DOMAIN,
     window_step: int = WINDOW_STEP,
+    max_target_len: int = 0,      # 0 = no filter; >0 = keep only short-series targets
 ) -> dict:
     """
     Preprocessing pipeline for CWPDDA (and optionally MCTL).
@@ -220,6 +221,13 @@ def build_source_target(
       - Target = ALL Alibaba machines (no length filter)
       - No DTW — domain alignment is handled by the GRL during training
       - Windows capped at max_windows per domain for balance
+
+      --max-target-len N (optional, recommended for CWPDDA):
+        The paper uses "containers meeting small sample condition" — only
+        short-lived Alibaba containers (few data points).  With all ~200k
+        target windows, a plain LSTM has enough data and transfer learning
+        doesn't help.  Setting max_target_len=200 replicates the few-shot
+        regime where Google knowledge is genuinely needed.
 
     MCTL setup (Zuo et al., 2024) — set use_dtw=True:
       - Source = Google series >= MCTL_MIN_SOURCE_LEN
@@ -242,7 +250,16 @@ def build_source_target(
     else:
         # CWPDDA: use everything (just drop trivially short series)
         src_raw = [s for s in google_series  if len(s) >= MIN_SOURCE_LEN]
-        tgt_raw = alibaba_series[:]
+        if max_target_len > 0:
+            tgt_raw = [s for s in alibaba_series if len(s) <= max_target_len]
+            if not tgt_raw:
+                print(f"  [warn] No Alibaba series <= {max_target_len} pts; using all.")
+                tgt_raw = alibaba_series[:]
+            else:
+                print(f"  Few-shot filter: kept {len(tgt_raw)} Alibaba series "
+                      f"(of {len(alibaba_series)}) with <= {max_target_len} pts")
+        else:
+            tgt_raw = alibaba_series[:]
         if not src_raw:
             src_raw = google_series[:]
 
@@ -303,10 +320,11 @@ def build_source_target(
         "horizon":           horizon,
         "window_step":       window_step,
         "cache_spec": {
-            "max_windows": max_windows,
-            "use_dtw": use_dtw,
-            "window_size": window_size,
-            "horizon": horizon,
+            "max_windows":    max_windows,
+            "use_dtw":        use_dtw,
+            "window_size":    window_size,
+            "horizon":        horizon,
+            "max_target_len": max_target_len,
         },
     }
 
