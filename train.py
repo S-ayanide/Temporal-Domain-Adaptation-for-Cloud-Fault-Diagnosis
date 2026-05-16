@@ -81,7 +81,9 @@ def train_cwpdda(
 
     model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=5, factor=0.5)
+    # patience=10 (was 5): give model more time before halving LR.
+    # factor=0.7 (was 0.5): smaller drops so LR doesn't collapse to 1e-4 within 30 epochs.
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=10, factor=0.7)
 
     X_src, y_src = data["src_X"], data["src_y"]
     X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
