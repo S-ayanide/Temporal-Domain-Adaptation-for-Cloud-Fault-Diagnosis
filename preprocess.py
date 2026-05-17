@@ -294,13 +294,30 @@ def build_source_target(
     src_X, src_y = make_windows_all(src_norm, window_size, horizon,
                                      window_step, max_windows)
 
-    # Target: temporal split per series, then window
-    tgt_train_s, tgt_val_s, tgt_test_s = [], [], []
-    for s in tgt_norm:
-        tr, va, te = temporal_split_series(s, TRAIN_RATIO, VAL_RATIO)
-        if len(tr) >= window_size + horizon: tgt_train_s.append(tr)
-        if len(va) >= window_size + horizon: tgt_val_s.append(va)
-        if len(te) >= window_size + horizon: tgt_test_s.append(te)
+    # Target: split series into train/val/test groups.
+    # Short series (e.g. 144-pt chunks): per-series 70/20/10 leaves only 14 points
+    # for test — not enough for even one window (need window_size+horizon = 25).
+    # Solution: if median series length <= 4×(window_size+horizon), split the LIST
+    # of series rather than splitting within each series.
+    min_split_len = 4 * (window_size + horizon)   # ~100 pts for W=24, H=1
+    median_tgt_len = float(np.median([len(s) for s in tgt_norm])) if tgt_norm else 0
+
+    if median_tgt_len < min_split_len:
+        # Short-series regime: assign whole series to train/val/test by index
+        n_tgt = len(tgt_norm)
+        n_train = int(n_tgt * TRAIN_RATIO)
+        n_val   = int(n_tgt * VAL_RATIO)
+        tgt_train_s = tgt_norm[:n_train]
+        tgt_val_s   = tgt_norm[n_train : n_train + n_val]
+        tgt_test_s  = tgt_norm[n_train + n_val :]
+    else:
+        # Long-series regime: split within each series temporally
+        tgt_train_s, tgt_val_s, tgt_test_s = [], [], []
+        for s in tgt_norm:
+            tr, va, te = temporal_split_series(s, TRAIN_RATIO, VAL_RATIO)
+            if len(tr) >= window_size + horizon: tgt_train_s.append(tr)
+            if len(va) >= window_size + horizon: tgt_val_s.append(va)
+            if len(te) >= window_size + horizon: tgt_test_s.append(te)
 
     tgt_train_X, tgt_train_y = make_windows_all(tgt_train_s, window_size, horizon,
                                                   window_step, max_windows)
