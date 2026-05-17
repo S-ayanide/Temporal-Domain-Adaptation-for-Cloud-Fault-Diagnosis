@@ -390,7 +390,10 @@ def load_alibaba(
 
     df[cpu_col] = pd.to_numeric(df[cpu_col], errors="coerce")
     df = df[df[cpu_col] >= 0].copy()         # drop -1 sentinels
-    df[cpu_col] = df[cpu_col].clip(0, 100).astype(np.float32)
+    # Container CPU is stored as % of container quota — values commonly exceed 100.
+    # Do NOT clip to 100; per-series min-max normalisation in preprocess.py handles scaling.
+    # Machine-level data is already in [0,100] so this is safe for both.
+    df[cpu_col] = df[cpu_col].clip(lower=0).astype(np.float32)
 
     if ts_col:
         df[ts_col] = pd.to_numeric(df[ts_col], errors="coerce")
