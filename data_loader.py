@@ -271,6 +271,32 @@ def load_google(
     return all_series
 
 
+# Alibaba 2017 container_usage.csv columns (no header in public release)
+# container_id, time_stamp, cpu_util_percent, mem_util_percent,
+# cpi, mpki, net_in, net_out, block_io_percent
+_ALIBABA_CONTAINER_COLS_9 = [
+    "container_id",
+    "time_stamp",
+    "cpu_util_percent",
+    "mem_util_percent",
+    "cpi",
+    "mpki",
+    "net_in",
+    "net_out",
+    "block_io_percent",
+]
+_ALIBABA_CONTAINER_COLS_8 = [
+    "container_id",
+    "time_stamp",
+    "cpu_util_percent",
+    "mem_util_percent",
+    "cpi",
+    "net_in",
+    "net_out",
+    "block_io_percent",
+]
+
+
 # ─── Alibaba 2017 loader ──────────────────────────────────────────────────────
 
 def load_alibaba(
@@ -280,10 +306,17 @@ def load_alibaba(
     seed: int = 42,
 ) -> List[np.ndarray]:
     """
-    Load Alibaba 2017 machine_usage.csv.
+    Load Alibaba 2017 container_usage.csv (preferred) or machine_usage.csv.
 
-    Expected location: data/raw/machine_usage.csv
-    Handles both the header and no-header variants of the file.
+    The CWPDDA paper (Wang et al., Euro-Par 2025) uses container-level Alibaba
+    data — containers are short-lived jobs with few data points ("small sample
+    condition"), making transfer from Google essential.  Machine-level data has
+    median 6844 points per machine — too much for a plain LSTM to need transfer.
+
+    Priority:
+      1. container_usage.csv  (Alibaba 2017 container trace — correct for paper)
+      2. container_usage.csv.gz
+      3. machine_usage.csv    (fallback — wrong granularity for CWPDDA)
 
     Returns a list of CPU time series (float32, values 0–100).
     """
@@ -291,52 +324,69 @@ def load_alibaba(
     if not root.exists():
         raise FileNotFoundError(f"Alibaba root not found: {root.resolve()}")
 
-    # Search for machine_usage.csv (may be gzipped)
-    candidates = (
+    # Try container_usage first (correct for CWPDDA), fall back to machine_usage
+    container_candidates = (
+        list(root.glob("container_usage.csv"))
+        + list(root.glob("container_usage.csv.gz"))
+        + list(root.rglob("container_usage.csv"))
+        + list(root.rglob("container_usage.csv.gz"))
+    )
+    machine_candidates = (
         list(root.glob("machine_usage.csv"))
         + list(root.glob("machine_usage.csv.gz"))
         + list(root.rglob("machine_usage.csv"))
         + list(root.rglob("machine_usage.csv.gz"))
     )
-    # Deduplicate preserving order (cannot use `seen` inside the same listcomp
-    # that is assigned alongside `seen` — UnboundLocalError in Python 3).
-    _seen: set[str] = set()
-    _uniq: List[Path] = []
-    for p in candidates:
-        key = str(p.resolve())
-        if key not in _seen:
-            _seen.add(key)
-            _uniq.append(p)
-    candidates = _uniq
 
-    if not candidates:
+    def _dedup(paths: List[Path]) -> List[Path]:
+        seen: set[str] = set()
+        out: List[Path] = []
+        for p in paths:
+            k = str(p.resolve())
+            if k not in seen:
+                seen.add(k)
+                out.append(p)
+        return out
+
+    container_candidates = _dedup(container_candidates)
+    machine_candidates   = _dedup(machine_candidates)
+
+    use_container = bool(container_candidates)
+    path = container_candidates[0] if use_container else (
+           machine_candidates[0]   if machine_candidates else None)
+
+    if path is None:
         found = [p.name for p in root.rglob("*.csv")][:15]
         raise FileNotFoundError(
-            f"machine_usage.csv not found under {root.resolve()}\n"
-            f"CSV files found: {found}"
+            f"Neither container_usage.csv nor machine_usage.csv found under "
+            f"{root.resolve()}\nCSV files found: {found}"
         )
 
-    path = candidates[0]
-    print(f"\n  Alibaba: loading {path.relative_to(root.parent)}")
+    if use_container:
+        print(f"\n  Alibaba: loading container_usage from "
+              f"{path.relative_to(root.parent)}")
+        df = _read_alibaba_csv(path, nrows, is_container=True)
+        id_col = _pick_col(df, ["container_id", "container", "cid"])
+    else:
+        print(f"\n  Alibaba: loading machine_usage from "
+              f"{path.relative_to(root.parent)}")
+        print(f"  [WARN] machine_usage.csv has median ~6844 pts/machine — this is "
+              f"the wrong granularity for CWPDDA (paper uses container_usage.csv).")
+        df = _read_alibaba_csv(path, nrows, is_container=False)
+        id_col = _pick_col(df, ["machine_id", "machineID", "machine"])
 
-    df = _read_machine_usage(path, nrows)
     print(f"  Alibaba columns : {list(df.columns)}")
     print(f"  Alibaba shape   : {df.shape}")
 
     cpu_col = _pick_col(df, ["cpu_util_percent", "cpu_util", "cpu"])
-    id_col  = _pick_col(df, ["machine_id", "machineID", "machine"])
     ts_col  = _pick_col(df, ["time_stamp", "timestamp", "ts", "time"])
 
     if cpu_col is None:
         raise RuntimeError(
-            f"Cannot find CPU column in machine_usage.csv.\n"
-            f"Columns present: {list(df.columns)}"
-        )
+            f"Cannot find CPU column.\nColumns present: {list(df.columns)}")
     if id_col is None:
         raise RuntimeError(
-            f"Cannot find machine_id column.\n"
-            f"Columns present: {list(df.columns)}"
-        )
+            f"Cannot find ID column.\nColumns present: {list(df.columns)}")
 
     df[cpu_col] = pd.to_numeric(df[cpu_col], errors="coerce")
     df = df[df[cpu_col] >= 0].copy()         # drop -1 sentinels
@@ -358,6 +408,22 @@ def load_alibaba(
         raise RuntimeError("No Alibaba series extracted. Check the CSV content.")
 
     rng = np.random.default_rng(seed)
+
+    # If machine_usage fallback: split each long machine series into container-sized
+    # chunks to simulate the short-lived container "small sample condition" described
+    # in the CWPDDA paper.  Each 6844-point machine → ~45 chunks of ~150 points,
+    # giving ~22k short series that resemble actual container lifetimes.
+    if not use_container:
+        chunk_len = 150  # typical container lifetime in the 2017 trace
+        chunked: List[np.ndarray] = []
+        for s in all_series:
+            for start in range(0, len(s) - chunk_len + 1, chunk_len):
+                chunked.append(s[start : start + chunk_len])
+        if chunked:
+            all_series = chunked
+            print(f"  [container-sim] Split {len(all_series)} machine chunks of "
+                  f"~{chunk_len} pts to simulate container short-series regime.")
+
     rng.shuffle(all_series)
     all_series = all_series[:max_series]
 
@@ -368,32 +434,36 @@ def load_alibaba(
     return all_series
 
 
-def _read_machine_usage(path: Path, nrows: int) -> pd.DataFrame:
+def _read_alibaba_csv(path: Path, nrows: int,
+                       is_container: bool = False) -> pd.DataFrame:
     """
-    Alibaba `machine_usage.csv` usually has **no header**; the first row is data.
-
-    Old logic treated any non-numeric first cell as a header — that breaks when
-    `machine_id` is a string like ``m_1932`` (synthetic / string ids): pandas
-    then used the whole first row as bogus column names.
-
-    We only parse as CSV-with-header if the first cell is literally ``machine_id``.
-    Otherwise we assign the standard 8- or 9-column schema (v2018 = 9 incl. mkpi).
+    Alibaba CSVs typically have no header — assign column names by position.
+    Only treat as headered CSV if the first cell is literally the id column name.
     """
     peek = pd.read_csv(path, nrows=1, header=None)
     ncols = len(peek.columns)
     first_cell = str(peek.iloc[0, 0]).strip().lower()
 
-    if first_cell == "machine_id":
+    if is_container:
+        header_names = ["container_id", "cid", "container"]
+        col9 = _ALIBABA_CONTAINER_COLS_9
+        col8 = _ALIBABA_CONTAINER_COLS_8
+    else:
+        header_names = ["machine_id"]
+        col9 = _ALIBABA_USAGE_COLS_9
+        col8 = _ALIBABA_USAGE_COLS_8
+
+    if first_cell in header_names:
         df_h = pd.read_csv(path, nrows=nrows, low_memory=False)
         if _pick_col(df_h, ["cpu_util_percent", "cpu_util", "cpu"]) is not None:
             return df_h
 
     if ncols == 9:
-        names = _ALIBABA_USAGE_COLS_9
+        names = col9
     elif ncols == 8:
-        names = _ALIBABA_USAGE_COLS_8
+        names = col8
     else:
-        base = _ALIBABA_USAGE_COLS_9
+        base = col9
         names = [base[i] if i < len(base) else f"col_{i}" for i in range(ncols)]
 
     return pd.read_csv(
@@ -403,6 +473,10 @@ def _read_machine_usage(path: Path, nrows: int) -> pd.DataFrame:
         names=names,
         low_memory=False,
     )
+
+
+# Keep old name as alias for any external callers
+_read_machine_usage = _read_alibaba_csv
 
 
 def _pick_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:

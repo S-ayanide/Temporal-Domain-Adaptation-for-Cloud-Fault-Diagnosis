@@ -80,9 +80,9 @@ def train_cwpdda(
     from cwpdda import grl_lambda
 
     model = model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    # patience=10 (was 5): give model more time before halving LR.
-    # factor=0.7 (was 0.5): smaller drops so LR doesn't collapse to 1e-4 within 30 epochs.
+    # weight_decay=1e-4: L2 regularisation — prevents overfitting on full 200k target dataset.
+    # Without it the model memorises training windows after ~10 epochs while val_mse stalls.
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=10, factor=0.7)
 
     X_src, y_src = data["src_X"], data["src_y"]
