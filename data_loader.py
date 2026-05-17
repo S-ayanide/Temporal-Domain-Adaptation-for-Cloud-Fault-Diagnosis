@@ -271,9 +271,25 @@ def load_google(
     return all_series
 
 
-# Alibaba 2017 container_usage.csv columns (no header in public release)
-# container_id, time_stamp, cpu_util_percent, mem_util_percent,
-# cpi, mpki, net_in, net_out, block_io_percent
+# Alibaba 2018 container_usage.csv actual layout (11 columns, leading empty col):
+# col0: empty | col1: container_id | col2: time_stamp | col3: cpu_util_percent
+# col4: mem_util_percent | col5: cpi | col6: mpki | col7: net_in
+# col8: net_out | col9: block_io_percent | col10: unknown
+# We name col0 "_drop" and drop it after loading.
+_ALIBABA_CONTAINER_COLS_11 = [
+    "_drop",
+    "container_id",
+    "time_stamp",
+    "cpu_util_percent",
+    "mem_util_percent",
+    "cpi",
+    "mpki",
+    "net_in",
+    "net_out",
+    "block_io_percent",
+    "_extra",
+]
+# Fallback for files without leading empty col (true 9-col layout)
 _ALIBABA_CONTAINER_COLS_9 = [
     "container_id",
     "time_stamp",
@@ -449,19 +465,23 @@ def _read_alibaba_csv(path: Path, nrows: int,
 
     if is_container:
         header_names = ["container_id", "cid", "container"]
-        col9 = _ALIBABA_CONTAINER_COLS_9
-        col8 = _ALIBABA_CONTAINER_COLS_8
+        col11 = _ALIBABA_CONTAINER_COLS_11
+        col9  = _ALIBABA_CONTAINER_COLS_9
+        col8  = _ALIBABA_CONTAINER_COLS_8
     else:
         header_names = ["machine_id"]
-        col9 = _ALIBABA_USAGE_COLS_9
-        col8 = _ALIBABA_USAGE_COLS_8
+        col11 = None
+        col9  = _ALIBABA_USAGE_COLS_9
+        col8  = _ALIBABA_USAGE_COLS_8
 
     if first_cell in header_names:
         df_h = pd.read_csv(path, nrows=nrows, low_memory=False)
         if _pick_col(df_h, ["cpu_util_percent", "cpu_util", "cpu"]) is not None:
             return df_h
 
-    if ncols == 9:
+    if ncols == 11 and col11 is not None:
+        names = col11
+    elif ncols == 9:
         names = col9
     elif ncols == 8:
         names = col8
@@ -469,13 +489,14 @@ def _read_alibaba_csv(path: Path, nrows: int,
         base = col9
         names = [base[i] if i < len(base) else f"col_{i}" for i in range(ncols)]
 
-    return pd.read_csv(
-        path,
-        nrows=nrows,
-        header=None,
-        names=names,
-        low_memory=False,
-    )
+    df = pd.read_csv(path, nrows=nrows, header=None, names=names, low_memory=False)
+
+    # Drop the leading empty column and any extra trailing columns
+    for drop_col in ["_drop", "_extra"]:
+        if drop_col in df.columns:
+            df = df.drop(columns=[drop_col])
+
+    return df
 
 
 # Keep old name as alias for any external callers
