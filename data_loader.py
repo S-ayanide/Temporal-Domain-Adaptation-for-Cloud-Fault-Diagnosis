@@ -428,20 +428,25 @@ def load_alibaba(
 
     rng = np.random.default_rng(seed)
 
-    # If machine_usage fallback: split each long machine series into container-sized
-    # chunks to simulate the short-lived container "small sample condition" described
-    # in the CWPDDA paper.  Each 6844-point machine → ~45 chunks of ~150 points,
-    # giving ~22k short series that resemble actual container lifetimes.
-    if not use_container:
-        chunk_len = 150  # typical container lifetime in the 2017 trace
+    # The CWPDDA paper uses "containers meeting small sample condition" — short-lived
+    # containers with few data points.  The 2018 container trace has median ~1168 pts;
+    # the 2017 trace had ~144 pts (12h × 5-min intervals).
+    #
+    # For both machine_usage (fallback) and container_usage (long series): split into
+    # 144-point chunks so each chunk resembles one 12-hour container lifetime.
+    # This matches the paper's regime where transfer from Google is actually needed.
+    median_len = float(np.median([len(s) for s in all_series]))
+    if median_len > 300:
+        chunk_len = 144  # 12h at 5-min sampling = 144 points (paper's container lifetime)
         chunked: List[np.ndarray] = []
         for s in all_series:
             for start in range(0, len(s) - chunk_len + 1, chunk_len):
                 chunked.append(s[start : start + chunk_len])
         if chunked:
+            src = "container" if use_container else "machine"
             all_series = chunked
-            print(f"  [container-sim] Split {len(all_series)} machine chunks of "
-                  f"~{chunk_len} pts to simulate container short-series regime.")
+            print(f"  [short-series] Split into {len(all_series)} {src} chunks of "
+                  f"{chunk_len} pts (12h container lifetime regime).")
 
     rng.shuffle(all_series)
     all_series = all_series[:max_series]
