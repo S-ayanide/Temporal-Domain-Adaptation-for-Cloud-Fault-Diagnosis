@@ -394,38 +394,44 @@ class CWPDDA(nn.Module):
 
     def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
         """
-        Compute a single canonical source query vector for deterministic inference.
+        Store a diverse bank of source windows for nearest-neighbour retrieval at
+        inference time.
 
-        During training, z_shared = cross_attn(Q=target, K/V=source) with random
-        source batches paired with each target batch.  At test time there is no
-        paired source, so we substitute the MEAN of a random subset of source windows
-        as a fixed K/V "knowledge bank" broadcast to the batch.
+        During training, each target batch is paired with a random source batch —
+        the LSTM sees diverse source patterns as K/V in cross-attention.  At test
+        time we retrieve the nearest source window (L2 distance) for each target
+        window so the K/V is as informative as during training.
 
-        Q=target means each target window's 24 distinct timesteps drive the queries,
-        so z_shared stays temporally diverse at inference even with a constant source.
-        This is deterministic — same target window always gets same prediction.
+        Stores:
+            _src_ref:      (n, W) float32  — source window bank
+            _src_ref_mean: (1, W) float32  — fallback mean (used if bank missing)
         """
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        subset = x_src_np[idx]                              # (n, W)
-        canonical = subset.mean(axis=0, keepdims=True)     # (1, W) — mean source
-        self._src_ref = torch.from_numpy(canonical).float()
+        subset = x_src_np[idx].astype(np.float32)          # (n, W)
+        self._src_ref      = torch.from_numpy(subset).float()           # (n, W)
+        self._src_ref_mean = torch.from_numpy(
+            subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
+
+    def _match_source(self, x_tgt: torch.Tensor) -> torch.Tensor:
+        """
+        For each target window find the nearest source window by L2 distance.
+        Returns matched source tensor (B, W) on the same device as x_tgt.
+        """
+        if self._src_ref is None:
+            return x_tgt   # fallback: self-attention
+        bank = self._src_ref.to(x_tgt.device)          # (n, W)
+        # L2 distance: (B, 1, W) - (1, n, W) → (B, n) → argmin → (B,)
+        dist = ((x_tgt.unsqueeze(1) - bank.unsqueeze(0)) ** 2).sum(-1)  # (B, n)
+        best = dist.argmin(dim=1)                                        # (B,)
+        return bank[best]                                                # (B, W)
 
     @torch.no_grad()
     def predict(self, x_tgt: torch.Tensor, x_src: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Predict workload for target windows.
-        Uses stored source reference if x_src not provided.
-        Falls back to x_tgt (self-attention) only if no reference available.
-        """
+        """Predict workload for target windows using nearest-source cross-attention."""
         self.eval()
         if x_src is None:
-            if self._src_ref is not None:
-                # Broadcast canonical source to match target batch size
-                B = x_tgt.size(0)
-                x_src = self._src_ref.to(x_tgt.device).expand(B, -1)
-            else:
-                x_src = x_tgt
+            x_src = self._match_source(x_tgt)
         z_shared, _, _ = self.extractor(x_src, x_tgt)
         return self.predictor(z_shared)
 
@@ -437,10 +443,9 @@ class CWPDDA(nn.Module):
         batch_size: int = 2048,
     ) -> np.ndarray:
         """
-        Inference on CPU/GPU using stored source reference for cross-attention.
-
-        Uses register_source_ref() source windows so that z_shared at test time
-        is computed the same way as during training (cross-attn Q=tgt, K/V=src).
+        Batched inference using nearest-neighbour source retrieval.
+        Each target window gets its closest source window as K/V in cross-attention,
+        matching the diversity seen during training.
         """
         self.eval()
         n = len(x_np)
@@ -448,18 +453,10 @@ class CWPDDA(nn.Module):
             h = int(self.predictor.fc.out_features)
             return np.empty((0, h), dtype=np.float32)
 
-        src_ref = (self._src_ref.to(device)
-                   if self._src_ref is not None else None)
-
         parts: list[np.ndarray] = []
         for i in range(0, n, batch_size):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
-            B = xb.size(0)
-            if src_ref is not None:
-                # Broadcast canonical mean source — deterministic, no per-batch noise
-                xs = src_ref.to(device).expand(B, -1)
-            else:
-                xs = xb   # fallback: self-attention
+            xs = self._match_source(xb)   # nearest-neighbour retrieval per window
             z, _, _ = self.extractor(xs, xb)
             parts.append(self.predictor(z).cpu().numpy())
         return np.concatenate(parts, axis=0)

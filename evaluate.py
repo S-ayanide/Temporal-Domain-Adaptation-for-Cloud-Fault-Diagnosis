@@ -172,7 +172,7 @@ def run_cwpdda_comparison(
         )
 
     results = {}
-    kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=50, device=device)
+    kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=150, device=device)
 
     print("  ARIMA...",  end=" ", flush=True)
     m = ARIMABaseline(); m.fit(X_tr, y_tr)

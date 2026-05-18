@@ -25,24 +25,32 @@ from torch.utils.data import DataLoader, TensorDataset
 # ─── Shared neural net trainer ────────────────────────────────────────────────
 
 class _NNBaseline:
-    def __init__(self, model, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+    def __init__(self, model, lr=1e-3, epochs=150, batch_size=64, device="cpu",
+                 weight_decay=1e-4):
         self.model     = model.to(device)
-        self.opt       = torch.optim.Adam(model.parameters(), lr=lr)
+        self.opt       = torch.optim.Adam(model.parameters(), lr=lr,
+                                          weight_decay=weight_decay)
         self.epochs    = epochs
         self.bs        = batch_size
         self.device    = device
 
     def fit(self, X, y, **_):
         self.model.train()
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.opt, patience=10, factor=0.7)
         dl = DataLoader(TensorDataset(torch.from_numpy(X).float(),
                                       torch.from_numpy(y).float()),
                         batch_size=self.bs, shuffle=True)
         for _ in range(self.epochs):
+            epoch_loss = 0.0
             for xb, yb in dl:
                 xb, yb = xb.to(self.device), yb.to(self.device)
                 self.opt.zero_grad()
-                F.mse_loss(self.model(xb), yb).backward()
+                loss = F.mse_loss(self.model(xb), yb)
+                loss.backward()
                 self.opt.step()
+                epoch_loss += loss.item()
+            sched.step(epoch_loss / max(1, len(dl)))
 
     @torch.no_grad()
     def predict(self, X):
@@ -99,7 +107,7 @@ class _LSTMNet(nn.Module):
 class LSTMBaseline(_NNBaseline):
     """Paper Table 2: 2 layers, 40 cells, lr=1e-3"""
     def __init__(self, window_size=24, hidden=40, layers=2, dropout=0.1,
-                 horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+                 horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu"):
         super().__init__(_LSTMNet(window_size, hidden, layers, dropout, horizon),
                          lr, epochs, batch_size, device)
 
@@ -120,7 +128,7 @@ class _GRUNet(nn.Module):
 
 class GRUBaseline(_NNBaseline):
     def __init__(self, window_size=24, hidden=128, layers=2, dropout=0.2,
-                 horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+                 horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu"):
         super().__init__(_GRUNet(window_size, hidden, layers, dropout, horizon),
                          lr, epochs, batch_size, device)
 
@@ -145,7 +153,7 @@ class _CNNLSTMNet(nn.Module):
 
 class CNNLSTMBaseline(_NNBaseline):
     def __init__(self, window_size=24, hidden=128, dropout=0.2,
-                 horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+                 horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu"):
         super().__init__(_CNNLSTMNet(window_size, hidden, dropout, horizon),
                          lr, epochs, batch_size, device)
 
@@ -171,7 +179,7 @@ class _AutoformerNet(nn.Module):
 
 class AutoformerBaseline(_NNBaseline):
     def __init__(self, window_size=24, d_model=64, n_heads=4, dim_ff=128,
-                 dropout=0.1, horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+                 dropout=0.1, horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu"):
         super().__init__(_AutoformerNet(window_size, d_model, n_heads, dim_ff, dropout, horizon),
                          lr, epochs, batch_size, device)
 
@@ -199,7 +207,7 @@ class _WANNNet(nn.Module):
 
 class WANNBaseline:
     def __init__(self, window_size=24, hidden=128, dropout=0.2,
-                 horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu", lam=0.1):
+                 horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu", lam=0.1):
         self.model  = _WANNNet(window_size, hidden, dropout, horizon).to(device)
         self.opt    = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.epochs = epochs; self.bs = batch_size
@@ -251,7 +259,7 @@ class _TS2VecNet(nn.Module):
 
 class TS2VecBaseline(_NNBaseline):
     def __init__(self, window_size=24, hidden=128, n_layers=3, kernel_size=3,
-                 dropout=0.2, horizon=1, lr=1e-3, epochs=50, batch_size=64, device="cpu"):
+                 dropout=0.2, horizon=1, lr=1e-3, epochs=150, batch_size=64, device="cpu"):
         super().__init__(_TS2VecNet(window_size, hidden, n_layers, kernel_size, dropout, horizon),
                          lr, epochs, batch_size, device)
 

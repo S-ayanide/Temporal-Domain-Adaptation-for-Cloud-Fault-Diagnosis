@@ -310,17 +310,21 @@ class MCCWPDDA(nn.Module):
     # ── Source reference for inference ────────────────────────────────────────
 
     def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
-        """
-        Store a random subset of source windows for use at inference time.
-        During training z_shared = cross_attn(Q=src, K/V=tgt).
-        Without a source reference, inference degrades to self-attention.
-        Call once after training completes.
-        """
+        """Store source bank for nearest-neighbour retrieval at inference."""
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        subset = x_src_np[idx]
-        canonical = subset.mean(axis=0, keepdims=True)     # (1, W) canonical source
-        self._src_ref = torch.from_numpy(canonical).float()
+        subset = x_src_np[idx].astype(np.float32)
+        self._src_ref      = torch.from_numpy(subset).float()           # (n, W)
+        self._src_ref_mean = torch.from_numpy(
+            subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
+
+    def _match_source(self, x_tgt: torch.Tensor) -> torch.Tensor:
+        """Return nearest source window for each target window."""
+        if self._src_ref is None:
+            return x_tgt
+        bank = self._src_ref.to(x_tgt.device)
+        dist = ((x_tgt.unsqueeze(1) - bank.unsqueeze(0)) ** 2).sum(-1)
+        return bank[dist.argmin(dim=1)]
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
@@ -330,14 +334,10 @@ class MCCWPDDA(nn.Module):
         x_tgt: torch.Tensor,
         x_src: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Predict workload using stored source reference for cross-attention."""
+        """Predict workload using nearest-neighbour source retrieval."""
         self.eval()
         if x_src is None:
-            if self._src_ref is not None:
-                B = x_tgt.size(0)
-                x_src = self._src_ref.to(x_tgt.device).expand(B, -1)
-            else:
-                x_src = x_tgt
+            x_src = self._match_source(x_tgt)
         z_shared, _, _ = self.extractor(x_src, x_tgt)
         return self.predictor(z_shared)
 
@@ -348,23 +348,17 @@ class MCCWPDDA(nn.Module):
         device:     str,
         batch_size: int = 2048,
     ) -> np.ndarray:
-        """Chunked inference using canonical mean source for cross-attention."""
+        """Batched inference using nearest-neighbour source retrieval."""
         self.eval()
         n = len(x_np)
         if n == 0:
             h = int(self.predictor.fc.out_features)
             return np.empty((0, h), dtype=np.float32)
 
-        src_ref = self._src_ref.to(device) if self._src_ref is not None else None
-
         parts: list[np.ndarray] = []
         for i in range(0, n, batch_size):
             xb = torch.from_numpy(x_np[i : i + batch_size]).float().to(device)
-            B = xb.size(0)
-            if src_ref is not None:
-                xs = src_ref.expand(B, -1)
-            else:
-                xs = xb
+            xs = self._match_source(xb)
             z, _, _ = self.extractor(xs, xb)
             parts.append(self.predictor(z).cpu().numpy())
         return np.concatenate(parts, axis=0)
