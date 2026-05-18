@@ -309,11 +309,15 @@ class MCCWPDDA(nn.Module):
 
     # ── Source reference for inference ────────────────────────────────────────
 
-    def register_source_ref(self, x_src_np: np.ndarray, n: int = 4096) -> None:
-        """Store source bank for nearest-neighbour retrieval at training and inference."""
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 0) -> None:
+        """Store source bank for nearest-neighbour retrieval at training and inference.
+        n=0 uses all available source windows for the best possible NN matches."""
         rng = np.random.default_rng(42)
-        idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        subset = x_src_np[idx].astype(np.float32)
+        if n > 0:
+            idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
+            subset = x_src_np[idx].astype(np.float32)
+        else:
+            subset = x_src_np.astype(np.float32)
         self._src_ref      = torch.from_numpy(subset).float()           # (n, W)
         self._src_ref_mean = torch.from_numpy(
             subset.mean(axis=0, keepdims=True)).float()                 # (1, W)

@@ -392,24 +392,28 @@ class CWPDDA(nn.Module):
             "lam": lam,
         }
 
-    def register_source_ref(self, x_src_np: np.ndarray, n: int = 4096) -> None:
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 0) -> None:
         """
-        Store a diverse bank of source windows for nearest-neighbour retrieval.
+        Store a bank of source windows for nearest-neighbour retrieval.
 
         Used at BOTH training time and inference time — each target window is
         paired with its nearest source window (L2 distance) so the cross-attention
         K/V is always relevant and training is consistent with inference.
 
-        n=4096: large enough that ~200k target windows each get a reasonably
-        distinct nearest source (avg. ~49 targets/source at n=4096).
+        n=0 (default): use ALL available source windows. Using the full bank gives
+        the best possible NN matches. For very large source sets (>100k) a GPU NN
+        search is fast enough; on CPU set n=8192 as a speed/quality trade-off.
 
         Stores:
             _src_ref:      (n, W) float32  — source window bank
             _src_ref_mean: (1, W) float32  — fallback mean (used if bank missing)
         """
         rng = np.random.default_rng(42)
-        idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
-        subset = x_src_np[idx].astype(np.float32)          # (n, W)
+        if n > 0:
+            idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
+            subset = x_src_np[idx].astype(np.float32)          # (n, W)
+        else:
+            subset = x_src_np.astype(np.float32)                # all windows
         self._src_ref      = torch.from_numpy(subset).float()           # (n, W)
         self._src_ref_mean = torch.from_numpy(
             subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
