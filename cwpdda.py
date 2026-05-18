@@ -418,18 +418,28 @@ class CWPDDA(nn.Module):
         self._src_ref_mean = torch.from_numpy(
             subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
 
-    def _match_source(self, x_tgt: torch.Tensor) -> torch.Tensor:
+    def _match_source(self, x_tgt: torch.Tensor, bank_chunk: int = 4096) -> torch.Tensor:
         """
         For each target window find the nearest source window by L2 distance.
         Returns matched source tensor (B, W) on the same device as x_tgt.
+
+        Chunked over the bank to avoid OOM: peak memory = B × bank_chunk × W × 4 bytes.
+        With B=2048, bank_chunk=4096, W=24 → 768 MB — safe on any GPU.
         """
         if self._src_ref is None:
             return x_tgt   # fallback: self-attention
-        bank = self._src_ref.to(x_tgt.device)          # (n, W)
-        # L2 distance: (B, 1, W) - (1, n, W) → (B, n) → argmin → (B,)
-        dist = ((x_tgt.unsqueeze(1) - bank.unsqueeze(0)) ** 2).sum(-1)  # (B, n)
-        best = dist.argmin(dim=1)                                        # (B,)
-        return bank[best]                                                # (B, W)
+        bank = self._src_ref.to(x_tgt.device)   # (n, W)
+        n = bank.shape[0]
+        best_dist = torch.full((x_tgt.shape[0],), float("inf"), device=x_tgt.device)
+        best_idx  = torch.zeros(x_tgt.shape[0], dtype=torch.long, device=x_tgt.device)
+        for start in range(0, n, bank_chunk):
+            chunk = bank[start : start + bank_chunk]          # (c, W)
+            dist  = ((x_tgt.unsqueeze(1) - chunk.unsqueeze(0)) ** 2).sum(-1)  # (B, c)
+            chunk_min, chunk_argmin = dist.min(dim=1)         # (B,)
+            mask = chunk_min < best_dist
+            best_dist[mask] = chunk_min[mask]
+            best_idx[mask]  = start + chunk_argmin[mask]
+        return bank[best_idx]                                  # (B, W)
 
     @torch.no_grad()
     def predict(self, x_tgt: torch.Tensor, x_src: Optional[torch.Tensor] = None) -> torch.Tensor:

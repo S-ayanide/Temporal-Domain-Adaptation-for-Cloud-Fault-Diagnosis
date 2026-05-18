@@ -322,13 +322,22 @@ class MCCWPDDA(nn.Module):
         self._src_ref_mean = torch.from_numpy(
             subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
 
-    def _match_source(self, x_tgt: torch.Tensor) -> torch.Tensor:
-        """Return nearest source window for each target window."""
+    def _match_source(self, x_tgt: torch.Tensor, bank_chunk: int = 4096) -> torch.Tensor:
+        """Return nearest source window for each target window (chunked to avoid OOM)."""
         if self._src_ref is None:
             return x_tgt
         bank = self._src_ref.to(x_tgt.device)
-        dist = ((x_tgt.unsqueeze(1) - bank.unsqueeze(0)) ** 2).sum(-1)
-        return bank[dist.argmin(dim=1)]
+        n = bank.shape[0]
+        best_dist = torch.full((x_tgt.shape[0],), float("inf"), device=x_tgt.device)
+        best_idx  = torch.zeros(x_tgt.shape[0], dtype=torch.long, device=x_tgt.device)
+        for start in range(0, n, bank_chunk):
+            chunk = bank[start : start + bank_chunk]
+            dist  = ((x_tgt.unsqueeze(1) - chunk.unsqueeze(0)) ** 2).sum(-1)
+            chunk_min, chunk_argmin = dist.min(dim=1)
+            mask = chunk_min < best_dist
+            best_dist[mask] = chunk_min[mask]
+            best_idx[mask]  = start + chunk_argmin[mask]
+        return bank[best_idx]
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
