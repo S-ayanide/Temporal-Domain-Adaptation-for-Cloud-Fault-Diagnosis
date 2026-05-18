@@ -392,15 +392,16 @@ class CWPDDA(nn.Module):
             "lam": lam,
         }
 
-    def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 4096) -> None:
         """
-        Store a diverse bank of source windows for nearest-neighbour retrieval at
-        inference time.
+        Store a diverse bank of source windows for nearest-neighbour retrieval.
 
-        During training, each target batch is paired with a random source batch —
-        the LSTM sees diverse source patterns as K/V in cross-attention.  At test
-        time we retrieve the nearest source window (L2 distance) for each target
-        window so the K/V is as informative as during training.
+        Used at BOTH training time and inference time — each target window is
+        paired with its nearest source window (L2 distance) so the cross-attention
+        K/V is always relevant and training is consistent with inference.
+
+        n=4096: large enough that ~200k target windows each get a reasonably
+        distinct nearest source (avg. ~49 targets/source at n=4096).
 
         Stores:
             _src_ref:      (n, W) float32  — source window bank
@@ -445,7 +446,7 @@ class CWPDDA(nn.Module):
         """
         Batched inference using nearest-neighbour source retrieval.
         Each target window gets its closest source window as K/V in cross-attention,
-        matching the diversity seen during training.
+        consistent with how source windows are selected during training.
         """
         self.eval()
         n = len(x_np)

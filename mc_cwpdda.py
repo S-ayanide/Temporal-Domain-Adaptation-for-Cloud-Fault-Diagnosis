@@ -309,8 +309,8 @@ class MCCWPDDA(nn.Module):
 
     # ── Source reference for inference ────────────────────────────────────────
 
-    def register_source_ref(self, x_src_np: np.ndarray, n: int = 512) -> None:
-        """Store source bank for nearest-neighbour retrieval at inference."""
+    def register_source_ref(self, x_src_np: np.ndarray, n: int = 4096) -> None:
+        """Store source bank for nearest-neighbour retrieval at training and inference."""
         rng = np.random.default_rng(42)
         idx = rng.choice(len(x_src_np), size=min(n, len(x_src_np)), replace=False)
         subset = x_src_np[idx].astype(np.float32)

@@ -85,19 +85,17 @@ def train_cwpdda(
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=10, factor=0.7)
 
-    X_src, y_src = data["src_X"], data["src_y"]
+    X_src = data["src_X"]  # y_src unused: compute_loss only predicts on target
     X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
     X_val, y_val = data["tgt_val_X"],   data["tgt_val_y"]
 
-    # Use the FULL source dataset — do NOT truncate to min(src, tgt).
-    # In the few-shot regime, target may have only ~5-20k windows while source
-    # has 125k+.  Limiting source to min() wastes 90% of the Google data.
-    # zip() stops at the shorter DataLoader (target), so each epoch we see
-    # len(dl_t) random source batches from the full 125k — different ones each
-    # epoch due to shuffle=True.
-    dl_s = DataLoader(TensorDataset(torch.from_numpy(X_src).float(),
-                                     torch.from_numpy(y_src).float()),
-                      batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=False, num_workers=0)
+    # Build nearest-neighbour source bank before training starts.
+    # During training each target batch is paired with its nearest source window
+    # (L2 distance into the 4096-window bank), making training consistent with
+    # inference.  This is more informative than random pairing and lets the LSTM
+    # see cross-attention K/V that is actually similar to the target query Q.
+    model.register_source_ref(X_src)
+
     dl_t = DataLoader(TensorDataset(torch.from_numpy(X_tr).float(),
                                      torch.from_numpy(y_tr).float()),
                       batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=False, num_workers=0)
@@ -144,12 +142,13 @@ def train_cwpdda(
         epoch_loss = 0.0
         epoch_Ly = 0.0; epoch_Lf = 0.0; epoch_Ld = 0.0
 
-        for (xs, ys), (xt, yt) in zip(dl_s, dl_t):
-            xs, ys = xs.to(device), ys.to(device)
+        for (xt, yt) in dl_t:
             xt, yt = xt.to(device), yt.to(device)
+            with torch.no_grad():
+                xs = model._match_source(xt)  # (B, W) nearest source window
 
             opt.zero_grad()
-            loss, info = model.compute_loss(xs, ys, xt, yt, step, total_steps)
+            loss, info = model.compute_loss(xs, yt, xt, yt, step, total_steps)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -160,16 +159,14 @@ def train_cwpdda(
             epoch_Ld   += info["Ld"]
             step += 1
 
-        n_batches = max(len(dl_s), 1)
+        n_batches = max(len(dl_t), 1)
         epoch_loss /= n_batches
         epoch_Ly   /= n_batches
         epoch_Lf   /= n_batches
         epoch_Ld   /= n_batches
 
-        # Validation — register source ref so cross-attn works correctly
+        # Validation — source ref already registered before training loop
         model.eval()
-        if not hasattr(model, '_src_ref') or model._src_ref is None:
-            model.register_source_ref(X_src)
         val_bs = min(4096, max(batch_size * 16, 512))
         if len(X_val) == 0:
             val_mse = float("inf")
