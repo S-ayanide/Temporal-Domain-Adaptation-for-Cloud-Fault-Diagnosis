@@ -49,7 +49,8 @@ def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
         ("use_dtw",        spec.get("use_dtw"),        not args.no_dtw),
         ("window_size",    spec.get("window_size"),    args.window_size),
         ("horizon",        spec.get("horizon"),        args.horizon),
-        ("max_target_len", spec.get("max_target_len", 0), args.max_target_len),
+        ("max_target_len",   spec.get("max_target_len", 0),   args.max_target_len),
+        ("max_target_train", spec.get("max_target_train", 0), args.max_target_train),
     ]
     bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c != a]
     if bad:
@@ -93,6 +94,10 @@ def parse_args():
                    help="Few-shot: keep only Alibaba series with <= N points. "
                         "0 = no filter (default). Try 200 to replicate the paper's "
                         "'small sample condition' for transfer learning to matter.")
+    p.add_argument("--max-target-train", type=int, default=0, metavar="N",
+                   help="Few-shot: cap target TRAIN windows at N after windowing. "
+                        "0 = no cap (default). E.g. --max-target-train 2000 creates "
+                        "a regime where transfer from Google is actually beneficial.")
 
     # CWPDDA hyperparams (Table 2 of paper)
     p.add_argument("--d-model",     type=int,   default=64)
@@ -230,15 +235,17 @@ def main():
             use_dtw=use_dtw,
             seed=args.seed,
             max_target_len=args.max_target_len,
+            max_target_train=args.max_target_train,
         )
         data["meta"]["cache_spec"] = {
-            "max_google":     args.max_google,
-            "max_alibaba":    args.max_alibaba,
-            "seed":           args.seed,
-            "use_dtw":        use_dtw,
-            "window_size":    args.window_size,
-            "horizon":        args.horizon,
-            "max_target_len": args.max_target_len,
+            "max_google":        args.max_google,
+            "max_alibaba":       args.max_alibaba,
+            "seed":              args.seed,
+            "use_dtw":           use_dtw,
+            "window_size":       args.window_size,
+            "horizon":           args.horizon,
+            "max_target_len":    args.max_target_len,
+            "max_target_train":  args.max_target_train,
         }
         if args.save_cache:
             save_preprocess_cache(args.save_cache, data)

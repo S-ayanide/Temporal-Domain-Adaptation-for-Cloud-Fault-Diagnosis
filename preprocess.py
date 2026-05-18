@@ -211,6 +211,7 @@ def build_source_target(
     max_windows: int = MAX_WINDOWS_PER_DOMAIN,
     window_step: int = WINDOW_STEP,
     max_target_len: int = 0,      # 0 = no filter; >0 = keep only short-series targets
+    max_target_train: int = 0,    # 0 = no cap; >0 = cap train windows (few-shot regime)
 ) -> dict:
     """
     Preprocessing pipeline for CWPDDA (and optionally MCTL).
@@ -299,10 +300,10 @@ def build_source_target(
     # for test — not enough for even one window (need window_size+horizon = 25).
     # Solution: if median series length <= 4×(window_size+horizon), split the LIST
     # of series rather than splitting within each series.
-    min_split_len = 4 * (window_size + horizon)   # ~100 pts for W=24, H=1
-    median_tgt_len = float(np.median([len(s) for s in tgt_norm])) if tgt_norm else 0
+    # Use series-level split when 10% of median series length < one window
+    test_split_pts = float(np.median([len(s) for s in tgt_norm])) * (1 - TRAIN_RATIO - VAL_RATIO) if tgt_norm else 0
 
-    if median_tgt_len < min_split_len:
+    if test_split_pts < (window_size + horizon):
         # Short-series regime: assign whole series to train/val/test by index
         n_tgt = len(tgt_norm)
         n_train = int(n_tgt * TRAIN_RATIO)
@@ -319,8 +320,10 @@ def build_source_target(
             if len(va) >= window_size + horizon: tgt_val_s.append(va)
             if len(te) >= window_size + horizon: tgt_test_s.append(te)
 
+    # Cap train at max_target_train if requested — creates few-shot regime
+    _train_cap = max_target_train if max_target_train > 0 else max_windows
     tgt_train_X, tgt_train_y = make_windows_all(tgt_train_s, window_size, horizon,
-                                                  window_step, max_windows)
+                                                  window_step, _train_cap)
     tgt_val_X,   tgt_val_y   = make_windows_all(tgt_val_s,   window_size, horizon,
                                                   window_step, max_windows // 3)
     tgt_test_X,  tgt_test_y  = make_windows_all(tgt_test_s,  window_size, horizon,
