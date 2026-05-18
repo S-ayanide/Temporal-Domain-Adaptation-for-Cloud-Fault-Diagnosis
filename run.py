@@ -49,8 +49,8 @@ def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
         ("use_dtw",        spec.get("use_dtw"),        not args.no_dtw),
         ("window_size",    spec.get("window_size"),    args.window_size),
         ("horizon",        spec.get("horizon"),        args.horizon),
-        ("max_target_len",   spec.get("max_target_len", 0),   args.max_target_len),
-        ("max_target_train", spec.get("max_target_train", 0), args.max_target_train),
+        ("max_target_len", spec.get("max_target_len", 0), args.max_target_len),
+        # max_target_train is a training-time cap applied after cache load — not a cache property
     ]
     bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c != a]
     if bad:
