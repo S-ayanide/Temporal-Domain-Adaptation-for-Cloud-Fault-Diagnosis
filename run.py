@@ -211,6 +211,13 @@ def main():
         print("=" * 60)
         data = load_preprocess_cache(args.load_cache)
         _validate_preprocess_cache(data["meta"], args)
+        # Apply training-window cap after cache load (few-shot regime)
+        if args.max_target_train and args.max_target_train > 0:
+            cap = args.max_target_train
+            data["tgt_train_X"] = data["tgt_train_X"][:cap]
+            data["tgt_train_y"] = data["tgt_train_y"][:cap]
+            print(f"[info] --max-target-train {cap}: using {len(data['tgt_train_X']):,} "
+                  f"target train windows (few-shot regime)")
     else:
         # ── 1. Load ───────────────────────────────────────────────────────────
         print("\n" + "=" * 60)
