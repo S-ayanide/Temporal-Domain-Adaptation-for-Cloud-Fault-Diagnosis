@@ -66,20 +66,37 @@ def mixup(x, alpha=1.0):
 
 
 def _papn(zm, zp1, zp2, zneg, lam, tau=1.0):
-    mu = (tau + 1) / 2
+    """
+    Compute positive probability for mixed anchor zm via softmax over
+    [positive, neg_1, ..., neg_K] — InfoNCE-style.
 
-    def student(a, b):
-        an, bn = F.normalize(a, -1), F.normalize(b, -1)
+    Why not the original ratio formula:
+      The original used student-t kernel (1+cos/τ)^(-μ) which maps cos≈0
+      (typical for random 128-dim vectors) to ≈1.0 for ALL pairs.
+      Both s_pos and s_neg collapse to 1 → ratio = 1 → clamped to 1-1e-7
+      for BOTH source and target → KL(p||p) = 0 → no gradient ever.
+
+    Softmax fix: with K=8 negatives, random init gives p ≈ 1/9 ≈ 0.11.
+    After source encoder pretraining, ps rises toward 1 (positives closer
+    than negatives in representation space).  Target pt starts at 0.11 →
+    KL(ps || pt) >> 0 → gradient pushes target encoder toward source structure.
+    """
+    def cos_sim(a, b):
+        an = F.normalize(a, dim=-1)
+        bn = F.normalize(b, dim=-1)
         if bn.dim() == 3:
-            cos = (an.unsqueeze(1) * bn).sum(-1)
-        else:
-            cos = (an * bn).sum(-1)
-        return (1.0 + cos / tau) ** (-mu)
+            return (an.unsqueeze(1) * bn).sum(-1)   # (B, K)
+        return (an * bn).sum(-1)                     # (B,)
 
-    s1 = student(zm, zp1)
-    s2 = student(zm, zp2)
-    sn = student(zm, zneg).mean(dim=1)
-    return (lam * s1 / (sn + 1e-8) + (1 - lam) * s2 / (sn + 1e-8)).clamp(1e-7, 1 - 1e-7)
+    s1 = cos_sim(zm, zp1).unsqueeze(1) / tau   # (B, 1)
+    s2 = cos_sim(zm, zp2).unsqueeze(1) / tau   # (B, 1)
+    sn = cos_sim(zm, zneg) / tau                # (B, K)
+
+    # Probability that anchor is closer to positive than to any negative
+    p1 = F.softmax(torch.cat([s1, sn], dim=1), dim=1)[:, 0]   # (B,)
+    p2 = F.softmax(torch.cat([s2, sn], dim=1), dim=1)[:, 0]   # (B,)
+
+    return (lam * p1 + (1 - lam) * p2).clamp(1e-7, 1 - 1e-7)
 
 
 def contrastive_kl_loss(xm_s, x1_s, x2_s, xn_s,
@@ -117,7 +134,7 @@ class MCTL(nn.Module):
 
     def __init__(self, window_size=24, hidden_dim=128, n_layers=3,
                  kernel_size=3, dropout=0.2, horizon=1,
-                 alpha_mixup=1.0, tau=1.0, n_neg=8):
+                 alpha_mixup=1.0, tau=0.1, n_neg=32):
         super().__init__()
         self.hidden_dim  = hidden_dim
         self.alpha_mixup = alpha_mixup
