@@ -437,7 +437,7 @@ def load_alibaba(
     # This matches the paper's regime where transfer from Google is actually needed.
     median_len = float(np.median([len(s) for s in all_series]))
     if median_len > 300:
-        chunk_len = 144  # 12h at 5-min sampling = 144 points (paper's container lifetime)
+        chunk_len = 96   # 8h at 5-min sampling; fits MCTL's <=100-pt few-shot filter
         chunked: List[np.ndarray] = []
         for s in all_series:
             for start in range(0, len(s) - chunk_len + 1, chunk_len):
