@@ -55,9 +55,9 @@ def _parse_gc19_shard(gz_path: str) -> pd.DataFrame:
             except json.JSONDecodeError:
                 continue
 
-            # start/end in microseconds → seconds
-            start_s = rec.get("start_time", 0) / 1e6
-            end_s   = rec.get("end_time",   0) / 1e6
+            # start/end in microseconds → seconds (values may be strings)
+            start_s = float(rec.get("start_time", 0)) / 1e6
+            end_s   = float(rec.get("end_time",   0)) / 1e6
 
             usage = rec.get("average_usage", {})
             if isinstance(usage, str):
