@@ -247,10 +247,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="Tr-Predictor: Two-Stage TrAdaBoost.R2-LSTM")
 
     # Data
-    p.add_argument("--data_dir",   required=True,
-                   help="Directory with GC19_a.npy … AC18.npy (Rossi replication output)")
-    p.add_argument("--raw_dir",    default=None,
-                   help="Raw data root (for AC18 per-machine extraction)")
+    p.add_argument("--raw_dir",    required=True,
+                   help="Raw data root: contains google/cell_{a-h}/*.json.gz and/or alibaba/machine_usage.csv")
     p.add_argument("--results_dir", default="results",
                    help="Where to save JSON results")
     p.add_argument("--target",     default=None,
@@ -261,6 +259,8 @@ def parse_args():
                    help="Look-back window length")
     p.add_argument("--horizon",    type=int, default=HORIZON,
                    help="Forecast horizon (steps)")
+    p.add_argument("--max_shards", type=int, default=None,
+                   help="Limit JSON.gz shards per GC19 cell (e.g. 20 for smoke test)")
 
     # Source selection
     p.add_argument("--top_k",        type=int,   default=5,
@@ -303,13 +303,13 @@ def main():
     tf.random.set_seed(args.seed)
 
     # Load data
-    print(f"Loading data from {args.data_dir} …")
+    print(f"Loading data from {args.raw_dir} …")
     splits = load_all(
-        data_dir=args.data_dir,
         raw_dir=args.raw_dir,
         target_len=args.target_len,
         seq_len=args.seq_len,
         horizon=args.horizon,
+        max_shards=args.max_shards,
     )
     print(f"Loaded {len(splits)} datasets.")
 
