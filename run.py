@@ -46,7 +46,7 @@ def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
         ("max_google",     spec.get("max_google"),     args.max_google),
         ("max_alibaba",    spec.get("max_alibaba"),    args.max_alibaba),
         ("seed",           spec.get("seed"),           args.seed),
-        ("use_dtw",        spec.get("use_dtw"),        not args.no_dtw),
+        ("use_dtw",        spec.get("use_dtw"),        (args.paper == "mctl") and (not args.no_dtw)),
         ("window_size",    spec.get("window_size"),    args.window_size),
         ("horizon",        spec.get("horizon"),        args.horizon),
         ("max_target_len", spec.get("max_target_len", 0), args.max_target_len),
