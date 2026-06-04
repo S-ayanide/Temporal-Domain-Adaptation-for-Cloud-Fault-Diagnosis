@@ -73,50 +73,48 @@ class ContrastiveHead(nn.Module):
 
 # ─── PAPN contrastive loss helpers ────────────────────────────────────────────
 
-def _student_sim(
-    a: torch.Tensor,   # (B, D) or (B, D)
-    b: torch.Tensor,   # (B, D) or (B, K, D)
-    tau: float = 1.0,
-) -> torch.Tensor:
-    """Student-t kernel f(a,b) = (1 + cos(a,b)/τ)^(-μ),  μ=(τ+1)/2."""
-    mu = (tau + 1) / 2
-    if b.dim() == 3:                          # negative bank (B, K, D)
-        cos = (a.unsqueeze(1) * b).sum(-1)    # (B, K)
-    else:
-        cos = (a * b).sum(-1)                 # (B,)
-    return (1.0 + cos / tau).clamp(min=1e-6) ** (-mu)
-
-
 def papn_contrastive_loss(
     h_anchor:  torch.Tensor,   # (B, proj_dim) — Gc(z_mix)
     h_pos_src: torch.Tensor,   # (B, proj_dim) — Gc(z_shared)  [source positive]
     h_pos_tgt: torch.Tensor,   # (B, proj_dim) — Gc(z_tgt_only) [target positive]
     lam: float,                 # mixup λ  (float in [0,1])
     n_neg: int = 8,
-    tau: float = 1.0,
+    tau: float = 1.0,           # kept for API compat; effective temp = 0.1
 ) -> torch.Tensor:
     """
-    PAPN loss (Eq. 3 of MC-CWPDDA paper; derived from MCTL Eq. 6).
+    PAPN loss: attracts anchor to the λ-weighted mixed positive, repels from
+    K in-batch negatives drawn from h_pos_src.
 
-    Attracts h_anchor to h_pos_src (weight λ) and h_pos_tgt (weight 1-λ),
-    repels from K random in-batch negatives drawn from h_pos_src.
+    Implemented via InfoNCE (NT-Xent) with temperature 0.1.  The original
+    student-t kernel formulation had an inversion bug: (1 + cos/τ)^(-μ) is
+    LOWER for similar pairs (cos≈1 → 0.5) and HIGHER for dissimilar ones
+    (cos≈0 → 1.0), causing the loss to push in the wrong direction and get
+    stuck at ln(2) throughout training.  InfoNCE has well-understood gradient
+    flow and recovers the same PAPN semantics (proportional mixed positive).
     """
     B = h_anchor.size(0)
     K = min(n_neg, B - 1)
 
-    # Draw K negative indices per anchor
+    # λ-weighted mixed positive (PAPN Eq. 3: proportional anchor-positive)
+    h_pos = F.normalize(lam * h_pos_src + (1.0 - lam) * h_pos_tgt, dim=-1)
+
+    # K in-batch negatives — exclude self so anchor i never sees its own positive
     neg_idx = torch.stack([
-        torch.randperm(B, device=h_anchor.device)[:K] for _ in range(B)
-    ])                                            # (B, K)
-    h_neg = h_pos_src[neg_idx]                   # (B, K, proj_dim)
+        torch.cat([
+            torch.arange(i, device=h_anchor.device),
+            torch.arange(i + 1, B, device=h_anchor.device)
+        ])[torch.randperm(B - 1, device=h_anchor.device)[:K]]
+        for i in range(B)
+    ])                                              # (B, K)
+    h_neg = h_pos_src[neg_idx]                     # (B, K, proj_dim)
 
-    f1 = _student_sim(h_anchor, h_pos_src, tau)  # (B,)
-    f2 = _student_sim(h_anchor, h_pos_tgt, tau)  # (B,)
-    fn = _student_sim(h_anchor, h_neg,     tau).mean(dim=1)  # (B,)
+    # InfoNCE with temperature 0.1
+    temp = 0.1
+    pos_sim = (h_anchor * h_pos).sum(-1) / temp                   # (B,)
+    neg_sim = (h_anchor.unsqueeze(1) * h_neg).sum(-1) / temp      # (B, K)
 
-    numerator   = f1.pow(lam) * f2.pow(1.0 - lam) + 1e-9
-    denominator = numerator + fn.clamp(min=1e-9)
-    return -torch.log(numerator / denominator).mean()
+    all_sim = torch.cat([pos_sim.unsqueeze(1), neg_sim], dim=1)   # (B, K+1)
+    return (-pos_sim + torch.logsumexp(all_sim, dim=1)).mean()
 
 
 def kl_alignment_loss(
