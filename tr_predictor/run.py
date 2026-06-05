@@ -261,6 +261,8 @@ def parse_args():
                    help="Forecast horizon (steps)")
     p.add_argument("--max_shards", type=int, default=None,
                    help="Limit JSON.gz shards per GC19 cell (e.g. 20 for smoke test)")
+    p.add_argument("--cache_dir",  default=None,
+                   help="Dir to cache preprocessed .npy files (default: <raw_dir>/../tr_cache)")
 
     # Source selection
     p.add_argument("--top_k",        type=int,   default=5,
@@ -306,6 +308,7 @@ def main():
     print(f"Loading data from {args.raw_dir} …")
     splits = load_all(
         raw_dir=args.raw_dir,
+        cache_dir=args.cache_dir,
         target_len=args.target_len,
         seq_len=args.seq_len,
         horizon=args.horizon,
