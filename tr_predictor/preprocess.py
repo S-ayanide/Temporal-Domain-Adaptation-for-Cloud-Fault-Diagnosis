@@ -22,6 +22,7 @@ import glob
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple, Optional
+from multiprocessing import Pool, cpu_count
 
 
 # ---------------------------------------------------------------------------
@@ -142,16 +143,13 @@ def load_gc19_raw(raw_dir: str, cache_dir: str = None,
         if max_shards is not None:
             shards = shards[:max_shards]
 
-        print(f"[preprocess] {name}: reading {len(shards)} shards …",
-              flush=True)
+        n_workers = min(cpu_count(), len(shards), 16)
+        print(f"[preprocess] {name}: reading {len(shards)} shards "
+              f"({n_workers} workers) …", flush=True)
 
-        frames = []
-        for i, sh in enumerate(shards):
-            df = _parse_gc19_shard(sh)
-            if not df.empty:
-                frames.append(df)
-            if (i + 1) % 20 == 0:
-                print(f"  … {i+1}/{len(shards)}", flush=True)
+        with Pool(processes=n_workers) as pool:
+            results = pool.map(_parse_gc19_shard, shards)
+        frames = [df for df in results if not df.empty]
 
         if not frames:
             print(f"[preprocess] {name}: no usable records — skipping.")
