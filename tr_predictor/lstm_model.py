@@ -97,9 +97,13 @@ def train_weak_learner(
     w = np.array(weights, dtype=np.float32)
     w = w / (w.mean() + 1e-12)
 
+    # Adapt batch size to dataset size (avoid empty batches)
+    effective_batch = min(batch_size, max(1, len(X)))
+
     callbacks = []
     val_data = None
-    if X_val is not None and Y_val is not None:
+    has_val = (X_val is not None and Y_val is not None and len(X_val) > 0)
+    if has_val:
         val_data = (X_val, Y_val)
         callbacks.append(
             keras.callbacks.EarlyStopping(
@@ -115,7 +119,7 @@ def train_weak_learner(
         sample_weight=w,
         validation_data=val_data,
         epochs=max_epochs,
-        batch_size=batch_size,
+        batch_size=effective_batch,
         callbacks=callbacks,
         verbose=verbose,
     )

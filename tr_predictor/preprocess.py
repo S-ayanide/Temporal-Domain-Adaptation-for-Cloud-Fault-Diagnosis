@@ -303,9 +303,18 @@ def small_sample_split(dataset: Dict,
     src_sc = _sc(s_src)
     te_sc  = _sc(s_te)
 
-    n_val     = max(1, int(len(tgt_sc) * val_frac))
-    tgt_tr_sc = tgt_sc[:-n_val]
-    tgt_val_sc = tgt_sc[-n_val:]
+    # Val needs at least seq_len+horizon steps to form any windows
+    min_val_steps = seq_len + horizon
+    n_val = max(min_val_steps, int(len(tgt_sc) * val_frac))
+    # Don't let val consume so much that train has nothing left
+    if n_val >= len(tgt_sc) - (seq_len + horizon):
+        n_val = 0
+    if n_val > 0:
+        tgt_tr_sc  = tgt_sc[:-n_val]
+        tgt_val_sc = tgt_sc[-n_val:]
+    else:
+        tgt_tr_sc  = tgt_sc
+        tgt_val_sc = np.empty((0, tgt_sc.shape[1]), dtype=np.float32)
 
     X_tr,  Y_tr  = make_windows(tgt_tr_sc,  seq_len, horizon)
     X_val, Y_val = make_windows(tgt_val_sc, seq_len, horizon)
