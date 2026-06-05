@@ -202,18 +202,19 @@ def load_ac18_raw(raw_dir: str, cache_dir: str = None,
         return []
 
     print("[preprocess] Loading AC18 CSV …", flush=True)
-    try:
-        df = pd.read_csv(csv_path, header=None,
-                         names=["machine_id", "time_stamp",
-                                "cpu_util_percent", "mem_util_percent",
-                                "disk_io_percent"],
-                         usecols=[0, 1, 2, 3],
-                         dtype={"machine_id": str})
-    except Exception:
-        df = pd.read_csv(csv_path,
-                         usecols=["machine_id", "time_stamp",
-                                  "cpu_util_percent", "mem_util_percent"],
-                         dtype={"machine_id": str})
+    # Sniff the actual column count from the first line
+    with open(csv_path) as _f:
+        first = _f.readline()
+    n_cols = len(first.split(","))
+    # Always read by position 0,1,2,3 regardless of total column count
+    col_names = [f"c{i}" for i in range(n_cols)]
+    col_names[0] = "machine_id"
+    col_names[1] = "time_stamp"
+    col_names[2] = "cpu_util_percent"
+    col_names[3] = "mem_util_percent"
+    df = pd.read_csv(csv_path, header=None, names=col_names,
+                     usecols=[0, 1, 2, 3],
+                     dtype={"machine_id": str})
 
     df["bin"] = (df["time_stamp"] // BIN_S).astype(int)
 
