@@ -167,14 +167,18 @@ def transfer_entropy(source: np.ndarray, target: np.ndarray,
     float
         Estimated TE in nats (higher = more directional influence).
     """
-    n = len(source)
+    # Truncate to the shorter series so arrays stay aligned
+    n = min(len(source), len(target))
     if n < lag + 2:
         return 0.0
 
+    src = source[:n]
+    tgt = target[:n]
+
     # Align
-    X  = source[: n - lag]       # X_t
-    Yt = target[: n - lag]       # Y_t
-    Yf = target[lag:]             # Y_{t+lag}
+    X  = src[: n - lag]    # X_t
+    Yt = tgt[: n - lag]    # Y_t
+    Yf = tgt[lag:]          # Y_{t+lag}
 
     # Rank-normalise
     X_r  = _rank_normalise(X)
