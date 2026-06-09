@@ -218,11 +218,11 @@ def run_experiment(splits: list, args) -> dict:
 
 def summarise(results: dict):
     methods = ["no_transfer", "all_source", "tr_predictor"]
-    metrics = ["mse", "mae", "mape", "r2"]
+    metrics = ["mse", "mae", "r2"]
     print(f"\n{'='*60}")
     print("AVERAGE ACROSS ALL TARGETS")
-    print(f"{'Method':<22} {'MSE':>8} {'MAE':>8} {'MAPE%':>8} {'R2':>8}")
-    print("-" * 55)
+    print(f"{'Method':<22} {'MSE':>9} {'MAE':>9} {'R²':>9}")
+    print("-" * 52)
     for method in methods:
         vals = {m: [] for m in metrics}
         for _, r in results.items():
@@ -233,10 +233,9 @@ def summarise(results: dict):
                     vals[m].append(v)
         avgs = {m: np.mean(vals[m]) if vals[m] else float("nan") for m in metrics}
         print(f"{method:<22} "
-              f"{avgs['mse']:>8.5f} "
-              f"{avgs['mae']:>8.5f} "
-              f"{avgs['mape']:>8.2f} "
-              f"{avgs['r2']:>8.4f}")
+              f"{avgs['mse']:>9.5f} "
+              f"{avgs['mae']:>9.5f} "
+              f"{avgs['r2']:>9.4f}")
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +298,13 @@ def main():
         _os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     # Reproducibility
-    import random, tensorflow as tf
+    import random, tensorflow as tf, logging
     random.seed(args.seed)
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
+    # Suppress TF retracing warnings (expected: new model each boosting round)
+    tf.get_logger().setLevel(logging.ERROR)
+    logging.getLogger("tensorflow").setLevel(logging.ERROR)
 
     # Load data
     print(f"Loading data from {args.raw_dir} …")

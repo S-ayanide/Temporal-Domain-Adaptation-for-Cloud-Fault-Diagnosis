@@ -60,9 +60,8 @@ def evaluate_all(pred: np.ndarray, target: np.ndarray,
 
 
 def print_metrics(name: str, metrics: dict):
-    """Pretty-print a metrics dict."""
+    """Pretty-print a metrics dict. MAPE excluded (unreliable for fraction-scale data near 0)."""
     print(f"{name:<30}  "
           f"MSE={metrics['mse']:.5f}  "
           f"MAE={metrics['mae']:.5f}  "
-          f"MAPE={metrics['mape']:.2f}%  "
           f"R²={metrics['r2']:.4f}")
