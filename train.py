@@ -1,7 +1,7 @@
 """
 train.py
 ========
-Training loops for CWPDDA and MCTL.
+Training loops for CWPDDA, MCTL, MC-CWPDDA, and N-BEATS.
 
 CWPDDA training (Section 4.1 of paper):
   - Joint optimisation: Ly + Lf + Ld
@@ -11,6 +11,11 @@ MCTL training (Section 3 of Zuo et al.):
   - Stage 1: source encoder pretraining on Google data
   - Stage 2a: contrastive KL transfer
   - Stage 2b: regression head fine-tuning
+
+N-BEATS training (Oreshkin et al., AAAI 2021):
+  - Source-only training on Google data (zero-shot: no Alibaba at train time)
+  - MaxAbs per-window scaling handles cross-domain amplitude differences
+  - Evaluated directly on Alibaba without fine-tuning
 """
 
 from __future__ import annotations
@@ -572,5 +577,143 @@ def train_mc_cwpdda(
 
     if ckpt_dir:
         torch.save(model.state_dict(), ckpt_dir / "mc_cwpdda.pt")
+
+    return {"history": history, "best_val_mse": best_val}
+
+
+# ─── N-BEATS training (zero-shot: source domain only) ────────────────────────
+
+def train_nbeats(
+    model,
+    data: dict,
+    device: str = "cpu",
+    epochs: int = 100,
+    batch_size: int = 1024,
+    lr: float = 1e-3,
+    patience: int = 20,
+    save_dir: Optional[str] = None,
+    verbose: bool = True,
+    checkpoint_every: int = 10,
+    resume_from: Optional[str] = None,
+) -> dict:
+    """
+    Zero-shot N-BEATS training — Oreshkin et al., AAAI 2021.
+
+    Uses source (Google) data only. No Alibaba (target) data is seen during
+    training. At inference the trained model is applied directly to Alibaba
+    windows via predict_numpy_batched().
+
+    Loss: MSE on forecast horizon.  The paper ensemble-trains with MASE/MAPE/
+    sMAPE; for simplicity we use MSE here (the difference is minor for the
+    cloud workload regression task).
+
+    checkpoint_every / resume_from: same recovery mechanism as train_cwpdda.
+    """
+    model = model.to(device)
+    X_src, y_src = data["src_X"], data["src_y"]
+    # Use target val split to monitor transfer quality during training
+    X_val, y_val = data["tgt_val_X"], data["tgt_val_y"]
+
+    dl_src = DataLoader(
+        TensorDataset(torch.from_numpy(X_src).float(), torch.from_numpy(y_src).float()),
+        batch_size=batch_size, shuffle=True, drop_last=False,
+        pin_memory=False, num_workers=0,
+    )
+
+    opt   = torch.optim.Adam(model.parameters(), lr=lr)
+    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=10, factor=0.5)
+
+    best_val, best_state, no_improve = float("inf"), None, 0
+    history: list[dict] = []
+    start_epoch = 1
+
+    ckpt_dir = Path(save_dir) if save_dir else None
+    if ckpt_dir:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resume from checkpoint if requested
+    if resume_from and Path(resume_from).is_file():
+        ckpt = torch.load(resume_from, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        opt.load_state_dict(ckpt["opt"])
+        sched.load_state_dict(ckpt["sched"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val    = ckpt["best_val"]
+        history     = ckpt.get("history", [])
+        if verbose:
+            print(f"\n[N-BEATS] Resuming from epoch {ckpt['epoch']} "
+                  f"(best_val_mse={best_val:.5f})")
+
+    if verbose:
+        print(f"\n[N-BEATS] Zero-shot training on {len(X_src):,} source windows "
+              f"— device={device}")
+        print(f"          n_blocks={model.n_blocks}  "
+              f"shared_weights={model.shared_weights}  "
+              f"epochs={epochs}  batch_size={batch_size}  lr={lr}")
+
+    val_bs = min(4096, max(batch_size * 4, 512))
+
+    for epoch in range(start_epoch, epochs + 1):
+        model.train()
+        epoch_loss = 0.0
+
+        for xb, yb in dl_src:
+            xb, yb = xb.to(device), yb.to(device)
+            opt.zero_grad()
+            pred = model(xb)
+            loss = F.mse_loss(pred, yb)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            epoch_loss += loss.item()
+
+        epoch_loss /= max(len(dl_src), 1)
+
+        # Validate on target domain (Alibaba val) — measures zero-shot quality
+        model.eval()
+        if len(X_val) == 0:
+            val_mse = float("inf")
+        else:
+            pred_val = model.predict_numpy_batched(X_val, device, batch_size=val_bs)
+            val_mse  = float(np.mean((pred_val.squeeze() - y_val.squeeze()) ** 2))
+        sched.step(val_mse)
+        history.append({"epoch": epoch, "train_loss": epoch_loss, "val_mse": val_mse})
+
+        if val_mse < best_val:
+            best_val   = val_mse
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+            if ckpt_dir:
+                torch.save(best_state, ckpt_dir / "nbeats_best.pt")
+        else:
+            no_improve += 1
+
+        if verbose and epoch % 20 == 0:
+            print(f"  epoch {epoch:3d}/{epochs}  "
+                  f"src_loss={epoch_loss:.5f}  val_mse(tgt)={val_mse:.5f}")
+
+        # Recovery checkpoint
+        if ckpt_dir and checkpoint_every > 0 and epoch % checkpoint_every == 0:
+            torch.save({
+                "epoch":    epoch,
+                "best_val": best_val,
+                "history":  history,
+                "model":    {k: v.clone() for k, v in model.state_dict().items()},
+                "opt":      opt.state_dict(),
+                "sched":    sched.state_dict(),
+            }, ckpt_dir / "nbeats_resume.pt")
+            if verbose:
+                print(f"  [ckpt] Saved recovery checkpoint at epoch {epoch}", flush=True)
+
+        if no_improve >= patience:
+            if verbose:
+                print(f"  Early stop at epoch {epoch}  best_val_mse={best_val:.5f}")
+            break
+
+    if best_state:
+        model.load_state_dict(best_state)
+
+    if ckpt_dir:
+        torch.save(model.state_dict(), ckpt_dir / "nbeats.pt")
 
     return {"history": history, "best_val_mse": best_val}

@@ -306,3 +306,99 @@ def print_mctl_table(results, title="MCTL — Few-Shot Workload Prediction"):
         print(f"{name:<12}  {m['MAE']:12.4E}  {m['MSE']:12.4E}  "
               f"{m['MAPE']:12.4E}  {m['sMAPE']:12.4E}{marker}")
     print("-" * 65)
+
+
+# ─── N-BEATS evaluation ───────────────────────────────────────────────────────
+
+@torch.no_grad()
+def evaluate_nbeats(model, X_test, y_test, device="cpu", infer_batch_size: int = 2048):
+    """Evaluate N-BEATS using CWPDDA metrics (MAE, MAPE%, RMSE on 0-100 scale)."""
+    model.eval()
+    pred = model.predict_numpy_batched(X_test, device, batch_size=infer_batch_size)
+    return cwpdda_metrics(y_test, pred)
+
+
+def run_nbeats_comparison(
+    nbeats_model,
+    data,
+    device="cpu",
+    skip_gluonts=False,
+    max_test_windows=None,
+    subsample_seed: int = 42,
+):
+    """
+    Evaluate N-BEATS against standard baselines on Alibaba test set.
+
+    N-BEATS is zero-shot: trained on Google, never sees Alibaba during training.
+    Baselines (ARIMA, LSTM) are trained on Alibaba target train split so the
+    comparison is intentionally favourable to baselines — N-BEATS beating them
+    demonstrates the meta-learning / zero-shot transfer capability.
+
+    Uses CWPDDA metrics (MAE, MAPE%, RMSE on 0-100 CPU utilisation scale).
+    """
+    from baselines import ARIMABaseline, LSTMBaseline
+
+    X_tr  = data["tgt_train_X"]; y_tr  = data["tgt_train_y"]
+    X_te  = data["tgt_test_X"];  y_te  = data["tgt_test_y"]
+    W     = X_tr.shape[1]
+
+    X_te, y_te, sub = _maybe_subsample_test(X_te, y_te, max_test_windows, subsample_seed)
+    if sub:
+        print(f"  Test subsampled to {len(X_te):,} windows (--eval-max-test).", flush=True)
+
+    print(
+        f"  Dataset: {len(X_tr):,} train windows (Alibaba, for baselines only), "
+        f"{len(X_te):,} test windows (W={W}).",
+        flush=True,
+    )
+    if len(X_te) == 0:
+        raise RuntimeError("No target test windows. Check preprocessing / Alibaba val-test splits.")
+
+    results = {}
+
+    print("  ARIMA...", end=" ", flush=True)
+    m = ARIMABaseline(); m.fit(X_tr, y_tr)
+    arima_n = min(500, len(X_te))
+    idx = np.random.default_rng(subsample_seed).choice(len(X_te), arima_n, replace=False)
+    results["ARIMA"] = evaluate_baseline(m, X_te[idx], y_te[idx], cwpdda_metrics)
+    print(f"done  (sampled {arima_n} windows)")
+
+    print("  LSTM...", end=" ", flush=True)
+    kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=150, device=device)
+    m = LSTMBaseline(**kw); m.fit(X_tr, y_tr)
+    results["LSTM"] = evaluate_baseline(m, X_te, y_te, cwpdda_metrics)
+    print("done")
+
+    if not skip_gluonts:
+        try:
+            from baselines import DeepARBaseline
+            print("  DeepAR...", end=" ", flush=True)
+            m = DeepARBaseline(prediction_length=y_tr.shape[1], epochs=10)
+            m.fit(X_tr, y_tr)
+            results["DeepAR"] = evaluate_baseline(m, X_te, y_te, cwpdda_metrics)
+            print("done")
+        except Exception as e:
+            print(f"skipped ({e})")
+
+    print("  N-BEATS (zero-shot)...", end=" ", flush=True)
+    results["N-BEATS"] = evaluate_nbeats(nbeats_model, X_te, y_te, device)
+    print("done")
+
+    return results
+
+
+def print_nbeats_table(results, title="N-BEATS — Zero-Shot Workload Prediction (Google→Alibaba)"):
+    print(f"\n{'='*62}", flush=True)
+    print(f"  {title}", flush=True)
+    print(f"  N-BEATS trained on Google only; applied zero-shot to Alibaba", flush=True)
+    print(f"  Baselines trained on Alibaba target data (in-domain advantage)", flush=True)
+    print(f"{'='*62}", flush=True)
+    if not results:
+        print("  (no results to show)", flush=True)
+        return
+    print(f"{'Method':<22}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}", flush=True)
+    print("-" * 54, flush=True)
+    for name, m in results.items():
+        marker = " ←" if name == "N-BEATS" else ""
+        print(f"{name:<22}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}{marker}", flush=True)
+    print("-" * 54, flush=True)

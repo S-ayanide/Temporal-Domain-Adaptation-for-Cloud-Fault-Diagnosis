@@ -72,8 +72,8 @@ def _cuda_device_index(device: str) -> int:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--paper",   default="cwpdda",
-                   choices=["cwpdda", "mctl", "both", "mc_cwpdda"],
-                   help="Which model to run (mc_cwpdda = novel contribution)")
+                   choices=["cwpdda", "mctl", "both", "mc_cwpdda", "nbeats"],
+                   help="Which model to run (nbeats = zero-shot meta-learning; mc_cwpdda = novel contribution)")
     p.add_argument("--google",  default="data/raw/google")
     p.add_argument("--alibaba", default="data/raw/alibaba")
     p.add_argument("--out",     default="results")
@@ -114,6 +114,20 @@ def parse_args():
     p.add_argument("--stage1-epochs",  type=int, default=50)
     p.add_argument("--stage2a-epochs", type=int, default=50)
     p.add_argument("--stage2b-epochs", type=int, default=50)
+
+    # N-BEATS hyperparams (Oreshkin et al., AAAI 2021)
+    p.add_argument("--nbeats-blocks",    type=int, default=8,
+                   help="N-BEATS: number of blocks L (paper uses 30; 8 is practical)")
+    p.add_argument("--nbeats-layers",    type=int, default=4,
+                   help="N-BEATS: FC layers per block K (paper uses 4)")
+    p.add_argument("--nbeats-hidden",    type=int, default=256,
+                   help="N-BEATS: hidden units per FC layer (paper uses 512)")
+    p.add_argument("--nbeats-shared",    action="store_true",
+                   help="N-BEATS: use shared-weights (SH) variant; default is NSH")
+    p.add_argument("--nbeats-epochs",    type=int, default=100,
+                   help="N-BEATS: training epochs on source domain")
+    p.add_argument("--nbeats-batch",     type=int, default=1024,
+                   help="N-BEATS: batch size (paper uses 1024)")
 
     # MC-CWPDDA hyperparams (three-stage curriculum)
     p.add_argument("--mc-stage1-epochs", type=int, default=30,
@@ -172,6 +186,7 @@ def main():
         args.mc_stage1_epochs = 5
         args.mc_stage2_epochs = 5
         args.mc_stage3_epochs = 10
+        args.nbeats_epochs = 5
         args.skip_gluonts = True
         args.max_google   = 500
         args.max_alibaba  = 500
@@ -233,7 +248,7 @@ def main():
         print(" Step 2/4 — Preprocess")
         print("=" * 60)
 
-        # DTW is MCTL-only — CWPDDA and MC-CWPDDA align via GRL/MMD, not DTW.
+        # DTW is MCTL-only — CWPDDA, MC-CWPDDA, and N-BEATS align differently.
         use_dtw = (args.paper == "mctl") and (not args.no_dtw)
         data = build_source_target(
             google_series, alibaba_series,
@@ -265,7 +280,7 @@ def main():
     print("\n" + "=" * 60)
     print(" Step 3/4 — Train")
     print("=" * 60)
-    from train import train_cwpdda, train_mctl, train_mc_cwpdda
+    from train import train_cwpdda, train_mctl, train_mc_cwpdda, train_nbeats
 
     results_all = {}
 
@@ -311,6 +326,29 @@ def main():
             verbose=True,
         )
 
+    if args.paper == "nbeats":
+        from nbeats import NBeats
+        nbeats_model = NBeats(
+            window_size=args.window_size,
+            horizon=args.horizon,
+            n_blocks=args.nbeats_blocks,
+            n_layers=args.nbeats_layers,
+            hidden_size=args.nbeats_hidden,
+            shared_weights=args.nbeats_shared,
+        )
+        train_nbeats(
+            nbeats_model, data,
+            device=args.device,
+            epochs=args.nbeats_epochs,
+            batch_size=args.nbeats_batch,
+            lr=args.lr,
+            patience=args.patience,
+            save_dir=str(ckpt_dir),
+            verbose=True,
+            checkpoint_every=args.checkpoint_every,
+            resume_from=args.resume,
+        )
+
     if args.paper == "mc_cwpdda":
         from mc_cwpdda import MCCWPDDA
         mc_cwpdda = MCCWPDDA(
@@ -344,8 +382,10 @@ def main():
     from evaluate import (
         run_cwpdda_comparison,
         run_mctl_comparison,
+        run_nbeats_comparison,
         print_cwpdda_table,
         print_mctl_table,
+        print_nbeats_table,
     )
 
     if args.paper in ("cwpdda", "both"):
@@ -434,6 +474,43 @@ def main():
             r = results_mc["MC-CWPDDA"]
             print(
                 f"\n  MC-CWPDDA test — MAE={r['MAE']:.4f}  "
+                f"MAPE={r['MAPE_%']:.2f}%  RMSE={r['RMSE']:.4f}",
+                flush=True,
+            )
+
+    if args.paper == "nbeats":
+        print("\n[N-BEATS zero-shot baselines]")
+        results_nbeats = run_nbeats_comparison(
+            nbeats_model, data, device=args.device,
+            skip_gluonts=args.skip_gluonts,
+            max_test_windows=args.eval_max_test,
+            subsample_seed=args.seed,
+        )
+        print_nbeats_table(results_nbeats)
+        results_all["nbeats"] = results_nbeats
+        nbeats_json = out_dir / "nbeats_results.json"
+        with open(nbeats_json, "w") as f:
+            json.dump(results_nbeats, f, indent=2)
+        print(f"\n  Saved metrics JSON: {nbeats_json.resolve()}", flush=True)
+
+        lines = [
+            "N-BEATS Zero-Shot Results — Google → Alibaba",
+            "(N-BEATS trained on Google only; baselines trained on Alibaba)",
+            "",
+            f"{'Method':<22}  {'MAE':>8}  {'MAPE %':>8}  {'RMSE':>8}",
+            "-" * 54,
+        ]
+        for name, m in results_nbeats.items():
+            lines.append(
+                f"{name:<22}  {m['MAE']:8.4f}  {m['MAPE_%']:8.2f}  {m['RMSE']:8.4f}"
+            )
+        table_path = out_dir / "nbeats_table.txt"
+        table_path.write_text("\n".join(lines))
+        print(f"  Saved table:        {table_path.resolve()}", flush=True)
+        if "N-BEATS" in results_nbeats:
+            r = results_nbeats["N-BEATS"]
+            print(
+                f"\n  N-BEATS test — MAE={r['MAE']:.4f}  "
                 f"MAPE={r['MAPE_%']:.2f}%  RMSE={r['RMSE']:.4f}",
                 flush=True,
             )
