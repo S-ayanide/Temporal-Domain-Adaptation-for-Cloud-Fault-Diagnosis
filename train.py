@@ -631,18 +631,29 @@ def train_nbeats(
     if ckpt_dir:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resume from checkpoint if requested
+    # Resume from checkpoint if requested.
+    # Supports two formats:
+    #   1. Recovery dict (nbeats_resume.pt): has "model", "opt", "sched", "epoch" keys
+    #   2. Flat state dict (nbeats_best.pt): saved by torch.save(model.state_dict(), ...)
     if resume_from and Path(resume_from).is_file():
         ckpt = torch.load(resume_from, map_location=device)
-        model.load_state_dict(ckpt["model"])
-        opt.load_state_dict(ckpt["opt"])
-        sched.load_state_dict(ckpt["sched"])
-        start_epoch = ckpt["epoch"] + 1
-        best_val    = ckpt["best_val"]
-        history     = ckpt.get("history", [])
-        if verbose:
-            print(f"\n[N-BEATS] Resuming from epoch {ckpt['epoch']} "
-                  f"(best_val_mse={best_val:.5f})")
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            # Full recovery checkpoint
+            model.load_state_dict(ckpt["model"])
+            opt.load_state_dict(ckpt["opt"])
+            sched.load_state_dict(ckpt["sched"])
+            start_epoch = ckpt["epoch"] + 1
+            best_val    = ckpt["best_val"]
+            history     = ckpt.get("history", [])
+            if verbose:
+                print(f"\n[N-BEATS] Resuming from recovery checkpoint epoch {ckpt['epoch']} "
+                      f"(best_val_mse={best_val:.5f})")
+        else:
+            # Flat state dict (e.g. nbeats_best.pt) — load weights only, start fresh
+            model.load_state_dict(ckpt)
+            if verbose:
+                print(f"\n[N-BEATS] Loaded weights from {resume_from} (flat state dict). "
+                      f"Optimizer/scheduler reset; epoch counter starts at 1.")
 
     if verbose:
         print(f"\n[N-BEATS] Zero-shot training on {len(X_src):,} source windows "
