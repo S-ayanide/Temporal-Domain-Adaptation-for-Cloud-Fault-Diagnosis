@@ -325,6 +325,7 @@ def run_nbeats_comparison(
     skip_gluonts=False,
     max_test_windows=None,
     subsample_seed: int = 42,
+    partial_save_path=None,
 ):
     """
     Evaluate N-BEATS against standard baselines on Alibaba test set.
@@ -335,7 +336,12 @@ def run_nbeats_comparison(
     demonstrates the meta-learning / zero-shot transfer capability.
 
     Uses CWPDDA metrics (MAE, MAPE%, RMSE on 0-100 CPU utilisation scale).
+
+    partial_save_path: if set, results are written to disk after every baseline
+                       so a crash/timeout cannot lose already-computed metrics.
     """
+    import json as _json
+    from pathlib import Path as _Path
     from baselines import ARIMABaseline, LSTMBaseline
 
     X_tr  = data["tgt_train_X"]; y_tr  = data["tgt_train_y"]
@@ -354,6 +360,10 @@ def run_nbeats_comparison(
     if len(X_te) == 0:
         raise RuntimeError("No target test windows. Check preprocessing / Alibaba val-test splits.")
 
+    def _save(results):
+        if partial_save_path:
+            _Path(partial_save_path).write_text(_json.dumps(results, indent=2))
+
     results = {}
 
     print("  ARIMA...", end=" ", flush=True)
@@ -361,13 +371,15 @@ def run_nbeats_comparison(
     arima_n = min(500, len(X_te))
     idx = np.random.default_rng(subsample_seed).choice(len(X_te), arima_n, replace=False)
     results["ARIMA"] = evaluate_baseline(m, X_te[idx], y_te[idx], cwpdda_metrics)
-    print(f"done  (sampled {arima_n} windows)")
+    _save(results)
+    print(f"done  (sampled {arima_n} windows)", flush=True)
 
     print("  LSTM...", end=" ", flush=True)
     kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=150, device=device)
     m = LSTMBaseline(**kw); m.fit(X_tr, y_tr)
     results["LSTM"] = evaluate_baseline(m, X_te, y_te, cwpdda_metrics)
-    print("done")
+    _save(results)
+    print("done", flush=True)
 
     if not skip_gluonts:
         try:
@@ -376,13 +388,15 @@ def run_nbeats_comparison(
             m = DeepARBaseline(prediction_length=y_tr.shape[1], epochs=10)
             m.fit(X_tr, y_tr)
             results["DeepAR"] = evaluate_baseline(m, X_te, y_te, cwpdda_metrics)
-            print("done")
+            _save(results)
+            print("done", flush=True)
         except Exception as e:
-            print(f"skipped ({e})")
+            print(f"skipped ({e})", flush=True)
 
     print("  N-BEATS (zero-shot)...", end=" ", flush=True)
     results["N-BEATS"] = evaluate_nbeats(nbeats_model, X_te, y_te, device)
-    print("done")
+    _save(results)
+    print("done", flush=True)
 
     return results
 

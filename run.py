@@ -485,6 +485,7 @@ def main():
             skip_gluonts=args.skip_gluonts,
             max_test_windows=args.eval_max_test,
             subsample_seed=args.seed,
+            partial_save_path=str(out_dir / "nbeats_results_partial.json"),
         )
         print_nbeats_table(results_nbeats)
         results_all["nbeats"] = results_nbeats
