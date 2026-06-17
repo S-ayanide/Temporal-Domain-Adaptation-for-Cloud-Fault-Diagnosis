@@ -65,9 +65,10 @@ def train_deepjdot(
     model,
     data: dict,
     device: str = "cpu",
+    pretrain_epochs: int = 30,
     epochs: int = 100,
     batch_size: int = 256,
-    lr: float = 2e-4,
+    lr: float = 1e-3,
     patience: int = 20,
     save_dir: Optional[str] = None,
     verbose: bool = True,
@@ -76,6 +77,12 @@ def train_deepjdot(
 ) -> dict:
     """
     Train DeepJDOT (Algorithm 1 of paper, adapted for regression).
+
+    pretrain_epochs: source-only MSE pre-training before joint OT training.
+      Without this, the OT cost matrix at epoch 1 is computed on random
+      embeddings → meaningless coupling → noisy gradients → slow/no convergence.
+      Pre-training gives the encoder enough structure so that the OT coupling
+      meaningfully pairs semantically similar source and target windows.
 
     data keys:
         src_X, src_y        — Google source windows + labels
@@ -144,13 +151,47 @@ def train_deepjdot(
 
     if verbose:
         print(f"\n[DeepJDOT] Training — device={device}  "
-              f"epochs={epochs}  batch={batch_size}  lr={lr}")
+              f"pretrain={pretrain_epochs}  epochs={epochs}  batch={batch_size}  lr={lr}")
         print(f"           α={model.alpha}  λ_t={model.lambda_t}  "
               f"OT solver={'ot.emd (exact)' if ot_available else 'uniform (POT not installed)'}")
         print(f"           src={len(X_src):,}  tgt_train={len(X_tr):,}  "
               f"using {n:,} from each per epoch")
 
     val_bs = min(4096, max(batch_size * 8, 512))
+
+    # ── Source-only pre-training ───────────────────────────────────────────────
+    # Train encoder+predictor on Google source data with plain MSE before any OT.
+    # This gives the embedding space enough structure so that the OT cost matrix
+    # at epoch 1 pairs semantically similar windows rather than random ones.
+    if pretrain_epochs > 0 and start_epoch == 1:
+        if verbose:
+            print(f"\n[DeepJDOT] Pre-training on source (Google) for {pretrain_epochs} epochs...")
+        pre_opt = torch.optim.Adam(model.parameters(), lr=lr)
+        dl_pre  = DataLoader(
+            TensorDataset(torch.from_numpy(X_src).float(),
+                          torch.from_numpy(y_src).float()),
+            batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0,
+        )
+        for ep in range(1, pretrain_epochs + 1):
+            model.train()
+            ep_loss = 0.0
+            for xb, yb in dl_pre:
+                xb, yb = xb.to(device), yb.to(device)
+                pre_opt.zero_grad()
+                loss = F.mse_loss(model(xb), yb)
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                pre_opt.step()
+                ep_loss += loss.item()
+            if verbose and ep % 10 == 0:
+                print(f"  pre-train epoch {ep:3d}/{pretrain_epochs}  "
+                      f"src_mse={ep_loss/max(len(dl_pre),1):.5f}")
+        if verbose:
+            print(f"  Pre-training complete.")
+
+        # Re-initialise optimizer and scheduler for joint OT phase with fresh state
+        opt   = torch.optim.Adam(model.parameters(), lr=lr * 0.3)
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=8, factor=0.5)
 
     for epoch in range(start_epoch, epochs + 1):
         model.train()

@@ -225,9 +225,9 @@ class DeepJDOT(nn.Module):
         total = L_src + self.alpha * L_feat + self.lambda_t * L_label
 
         return total, {
-            "L_src":   float(L_src),
-            "L_feat":  float(L_feat),
-            "L_label": float(L_label),
+            "L_src":   L_src.item(),
+            "L_feat":  L_feat.item(),
+            "L_label": L_label.item(),
         }
 
     # ── Inference ──────────────────────────────────────────────────────────────

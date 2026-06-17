@@ -86,7 +86,10 @@ def parse_args():
                    help="OT cost weight on label consistency term")
 
     # Training hyperparameters (paper: lr=2e-4, batch=500, Adam)
-    p.add_argument("--lr",             type=float, default=2e-4)
+    p.add_argument("--lr",              type=float, default=1e-3)
+    p.add_argument("--pretrain-epochs", type=int,   default=30,
+                   help="Source-only MSE pre-training epochs before joint OT training. "
+                        "Gives embedding space structure so OT coupling is meaningful at epoch 1.")
     p.add_argument("--epochs",         type=int,   default=100)
     p.add_argument("--batch-size",     type=int,   default=256,
                    help="Minibatch size m (OT matrix is m×m; keep ≤512)")
@@ -107,10 +110,11 @@ def main():
     np.random.seed(args.seed)
 
     if args.quick:
-        args.epochs      = 5
-        args.max_google  = 300
-        args.max_alibaba = 300
-        args.batch_size  = 64
+        args.pretrain_epochs = 3
+        args.epochs          = 5
+        args.max_google      = 300
+        args.max_alibaba     = 300
+        args.batch_size      = 64
         print("[quick mode] Reduced epochs and data size")
 
     import torch
@@ -188,6 +192,7 @@ def main():
     train_deepjdot(
         model, data,
         device=args.device,
+        pretrain_epochs=args.pretrain_epochs,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
