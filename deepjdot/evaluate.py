@@ -82,7 +82,10 @@ def run_deepjdot_comparison(
     crash cannot lose already-computed metrics.
     """
     import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    _here   = os.path.dirname(os.path.abspath(__file__))   # deepjdot/
+    _parent = os.path.dirname(_here)                        # updated_research/
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
     from baselines import ARIMABaseline, LSTMBaseline
 
     X_tr = data["tgt_train_X"]; y_tr = data["tgt_train_y"]

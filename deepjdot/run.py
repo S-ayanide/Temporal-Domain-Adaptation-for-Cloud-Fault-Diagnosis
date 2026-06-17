@@ -41,7 +41,12 @@ from pathlib import Path
 import numpy as np
 
 # Allow importing from parent directory (preprocess, data_loader, baselines)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_HERE   = Path(__file__).resolve().parent         # updated_research/deepjdot/
+_PARENT = _HERE.parent                             # updated_research/
+# deepjdot/ must come first so "from train import" finds deepjdot/train.py
+# not the parent updated_research/train.py
+sys.path.insert(0, str(_PARENT))
+sys.path.insert(0, str(_HERE))
 
 
 def parse_args():
