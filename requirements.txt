@@ -3,6 +3,7 @@ numpy>=1.24
 pandas>=2.0
 statsmodels>=0.14       # ARIMA baseline
 pyarrow>=12.0           # read parquet Google shards
+POT>=0.9.0              # Python Optimal Transport — ot.emd() for DeepJDOT OT solver
 
 # Optional — needed for DeepAR / DRP / MQF2 (CWPDDA paper baselines)
 # If not installed, these fall back to LSTM/GRU/CNN-LSTM automatically
