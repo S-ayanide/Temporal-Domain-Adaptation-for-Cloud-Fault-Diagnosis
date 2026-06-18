@@ -108,11 +108,24 @@ def run_deepjdot_comparison(
         pred = model.predict(X_te)
         return cwpdda_metrics(y_te, pred)
 
+    # Cap baseline training data — LSTM on 200k windows × 150 epochs = hours.
+    # 10k windows is more than enough to train a representative baseline LSTM.
+    _BASELINE_TRAIN_CAP = 10_000
+    if len(X_tr) > _BASELINE_TRAIN_CAP:
+        rng = np.random.default_rng(subsample_seed)
+        _bl_idx = rng.choice(len(X_tr), _BASELINE_TRAIN_CAP, replace=False)
+        _bl_idx.sort()
+        X_tr_bl, y_tr_bl = X_tr[_bl_idx], y_tr[_bl_idx]
+        print(f"  Baselines training capped at {_BASELINE_TRAIN_CAP:,} windows "
+              f"(from {len(X_tr):,}) for speed.", flush=True)
+    else:
+        X_tr_bl, y_tr_bl = X_tr, y_tr
+
     results = {}
     kw = dict(window_size=W, horizon=y_tr.shape[1], epochs=150, device=device)
 
     print("  ARIMA...", end=" ", flush=True)
-    m = ARIMABaseline(); m.fit(X_tr, y_tr)
+    m = ARIMABaseline(); m.fit(X_tr_bl, y_tr_bl)
     arima_n = min(500, len(X_te))
     idx = np.random.default_rng(subsample_seed).choice(len(X_te), arima_n, replace=False)
     results["ARIMA"] = _baseline_metrics(m, X_te[idx], y_te[idx])
@@ -120,7 +133,7 @@ def run_deepjdot_comparison(
     print(f"done  (sampled {arima_n})", flush=True)
 
     print("  LSTM...", end=" ", flush=True)
-    m = LSTMBaseline(**kw); m.fit(X_tr, y_tr)
+    m = LSTMBaseline(**kw); m.fit(X_tr_bl, y_tr_bl)
     results["LSTM"] = _baseline_metrics(m, X_te, y_te)
     _save(results)
     print("done", flush=True)
