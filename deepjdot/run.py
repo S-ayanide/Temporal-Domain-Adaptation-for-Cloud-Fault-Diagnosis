@@ -62,7 +62,9 @@ def parse_args():
 
     # Data options (match parent run.py for cache compatibility)
     p.add_argument("--max-google",  type=int, default=3000)
-    p.add_argument("--max-alibaba", type=int, default=3000)
+    p.add_argument("--max-alibaba", type=int, default=20000,
+                   help="Max Alibaba series to load. 20000 gives ~200k target windows "
+                        "matching the N-BEATS run. Set to 3000 to match the small cache.")
     p.add_argument("--window-size", type=int, default=24)
     p.add_argument("--horizon",     type=int, default=1)
     p.add_argument("--max-target-len",   type=int, default=0)
@@ -73,16 +75,17 @@ def parse_args():
     p.add_argument("--load-cache", default=None, metavar="PATH.npz")
 
     # DeepJDOT model hyperparameters
-    p.add_argument("--hidden-dim",  type=int,   default=64,
+    p.add_argument("--hidden-dim",  type=int,   default=128,
                    help="LSTM hidden units in encoder")
     p.add_argument("--n-layers",    type=int,   default=2,
                    help="LSTM layers in encoder")
-    p.add_argument("--d-embed",     type=int,   default=64,
+    p.add_argument("--d-embed",     type=int,   default=128,
                    help="Embedding dimension (OT feature space)")
     p.add_argument("--dropout",     type=float, default=0.1)
-    p.add_argument("--alpha",       type=float, default=0.01,
-                   help="OT cost weight on feature alignment term")
-    p.add_argument("--lambda-t",    type=float, default=0.1,
+    p.add_argument("--alpha",       type=float, default=1.0,
+                   help="OT cost weight on feature alignment term. "
+                        "Needs to be ~1.0 so feature term is same order as MSE (~0.02)")
+    p.add_argument("--lambda-t",    type=float, default=0.5,
                    help="OT cost weight on label consistency term")
 
     # Training hyperparameters (paper: lr=2e-4, batch=500, Adam)

@@ -109,29 +109,29 @@ class DeepJDOT(nn.Module):
     Args:
         window_size:  Input lookback length (default 24, matches CWPDDA/MCTL)
         horizon:      Steps ahead to predict (default 1)
-        hidden_dim:   LSTM hidden units (paper uses 128 for image feature maps;
-                      64 is sufficient for 1D time-series)
+        hidden_dim:   LSTM hidden units (128, same as CWPDDA)
         n_layers:     LSTM layers (2, same depth as CWPDDA)
         d_embed:      Embedding dimension — dimensionality of the OT feature space
         dropout:      LSTM dropout
-        alpha:        Weight on feature alignment term ‖z_s − z_t‖² in OT cost
-                      (paper uses 0.001 for image features; 0.01 default here
-                       since LSTM embeddings are lower-dimensional)
-        lambda_t:     Weight on label consistency term L_t in OT cost
-                      (paper uses 0.0001 for CE; 0.1 default here for MSE
-                       since MSE on [0,1] scale is much smaller than CE)
+        alpha:        Weight on feature alignment term ‖z_s − z_t‖² in OT cost.
+                      MSE source loss is ~0.02 on normalised data; squared L2 of
+                      tanh-normalised 128-dim vectors is ~0.5–2.0, so alpha=1.0
+                      makes the feature alignment term the same order as source MSE.
+                      (Original paper: 0.001 for raw pixel CE; much larger needed for MSE.)
+        lambda_t:     Weight on label consistency term L_t in OT cost.
+                      0.5 makes label propagation contribute ~half the source MSE.
     """
 
     def __init__(
         self,
         window_size: int = 24,
         horizon: int = 1,
-        hidden_dim: int = 64,
+        hidden_dim: int = 128,
         n_layers: int = 2,
-        d_embed: int = 64,
+        d_embed: int = 128,
         dropout: float = 0.1,
-        alpha: float = 0.01,
-        lambda_t: float = 0.1,
+        alpha: float = 1.0,
+        lambda_t: float = 0.5,
     ):
         super().__init__()
         self.encoder  = TSEncoder(window_size, hidden_dim, n_layers, d_embed, dropout)
