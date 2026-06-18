@@ -82,9 +82,10 @@ def parse_args():
     p.add_argument("--d-embed",     type=int,   default=128,
                    help="Embedding dimension (OT feature space)")
     p.add_argument("--dropout",     type=float, default=0.1)
-    p.add_argument("--alpha",       type=float, default=1.0,
+    p.add_argument("--alpha",       type=float, default=0.1,
                    help="OT cost weight on feature alignment term. "
-                        "Needs to be ~1.0 so feature term is same order as MSE (~0.02)")
+                        "With L2-normalised embeddings distances are in [0,4]; "
+                        "alpha=0.1 makes alignment ~0.2 × MSE source loss")
     p.add_argument("--lambda-t",    type=float, default=0.5,
                    help="OT cost weight on label consistency term")
 

@@ -63,16 +63,18 @@ class TSEncoder(nn.Module):
             batch_first=True,
             dropout=dropout if n_layers > 1 else 0.0,
         )
-        self.proj = nn.Sequential(
-            nn.Linear(hidden_dim, d_embed),
-            nn.Tanh(),
-        )
+        self.proj = nn.Linear(hidden_dim, d_embed)
+        # L2-normalise embeddings onto the unit hypersphere.
+        # Tanh was causing gradient vanishing near ±1 (Lf contribution < 1% of loss).
+        # With unit-norm embeddings: squared L2 distance ∈ [0, 4] always, so the
+        # feature alignment term stays the same order as the MSE source loss.
         self.d_embed = d_embed
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) → z: (B, d_embed)"""
-        h, _ = self.lstm(x.unsqueeze(-1))   # (B, W, hidden_dim)
-        return self.proj(h[:, -1, :])        # (B, d_embed)
+        """x: (B, W) → z: (B, d_embed), unit-norm"""
+        h, _ = self.lstm(x.unsqueeze(-1))          # (B, W, hidden_dim)
+        z = self.proj(h[:, -1, :])                  # (B, d_embed)
+        return F.normalize(z, p=2, dim=-1)          # unit hypersphere
 
 
 # ─── Predictor f: maps embedding → workload forecast ──────────────────────────
@@ -130,7 +132,7 @@ class DeepJDOT(nn.Module):
         n_layers: int = 2,
         d_embed: int = 128,
         dropout: float = 0.1,
-        alpha: float = 1.0,
+        alpha: float = 0.1,
         lambda_t: float = 0.5,
     ):
         super().__init__()
