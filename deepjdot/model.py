@@ -45,16 +45,18 @@ class TSEncoder(nn.Module):
     original DeepJDOT paper.
 
     Architecture:
+      - MaxAbs per-window normalization (same as N-BEATS): divide each input
+        window by its own absolute max before the LSTM. This makes the encoder
+        scale-invariant: Google windows [0.01-0.05] and Alibaba windows [0.09-0.30]
+        both become [0,1] before entering the LSTM, removing the amplitude mismatch
+        that was causing the LSTM to learn Google-specific scale features.
       - 2-layer LSTM, hidden_dim units
       - Take the final hidden state h_T as the sequence representation
-      - Project through FC + Tanh to get the d_embed-dimensional embedding z
-
-    The tanh normalises the embedding space, which helps keep the squared
-    L2 distance in the OT cost matrix on a stable scale.
+      - Project to d_embed and L2-normalize onto the unit hypersphere
     """
 
-    def __init__(self, window_size: int = 24, hidden_dim: int = 64,
-                 n_layers: int = 2, d_embed: int = 64, dropout: float = 0.1):
+    def __init__(self, window_size: int = 24, hidden_dim: int = 128,
+                 n_layers: int = 2, d_embed: int = 128, dropout: float = 0.1):
         super().__init__()
         self.lstm = nn.LSTM(
             input_size=1,
@@ -64,17 +66,20 @@ class TSEncoder(nn.Module):
             dropout=dropout if n_layers > 1 else 0.0,
         )
         self.proj = nn.Linear(hidden_dim, d_embed)
-        # L2-normalise embeddings onto the unit hypersphere.
-        # Tanh was causing gradient vanishing near ±1 (Lf contribution < 1% of loss).
-        # With unit-norm embeddings: squared L2 distance ∈ [0, 4] always, so the
-        # feature alignment term stays the same order as the MSE source loss.
         self.d_embed = d_embed
 
+    @staticmethod
+    def maxabs_scale(x: torch.Tensor):
+        """Normalize each window by its own absolute maximum (per N-BEATS paper)."""
+        scale = x.abs().max(dim=1, keepdim=True).values.clamp(min=1e-8)
+        return x / scale, scale
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) → z: (B, d_embed), unit-norm"""
-        h, _ = self.lstm(x.unsqueeze(-1))          # (B, W, hidden_dim)
-        z = self.proj(h[:, -1, :])                  # (B, d_embed)
-        return F.normalize(z, p=2, dim=-1)          # unit hypersphere
+        """x: (B, W) raw → z: (B, d_embed), unit-norm"""
+        x_norm, _ = self.maxabs_scale(x)              # scale-invariant input
+        h, _ = self.lstm(x_norm.unsqueeze(-1))         # (B, W, hidden_dim)
+        z = self.proj(h[:, -1, :])                     # (B, d_embed)
+        return F.normalize(z, p=2, dim=-1)             # unit hypersphere
 
 
 # ─── Predictor f: maps embedding → workload forecast ──────────────────────────
@@ -132,8 +137,8 @@ class DeepJDOT(nn.Module):
         n_layers: int = 2,
         d_embed: int = 128,
         dropout: float = 0.1,
-        alpha: float = 0.1,
-        lambda_t: float = 0.5,
+        alpha: float = 0.001,
+        lambda_t: float = 0.1,
     ):
         super().__init__()
         self.encoder  = TSEncoder(window_size, hidden_dim, n_layers, d_embed, dropout)
@@ -145,12 +150,20 @@ class DeepJDOT(nn.Module):
     # ── Forward ────────────────────────────────────────────────────────────────
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) → z: (B, d_embed)"""
+        """x: (B, W) → z: (B, d_embed), unit-norm"""
         return self.encoder(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) → y_hat: (B, horizon)"""
-        return self.predictor(self.encode(x))
+        """
+        x: (B, W) → y_hat: (B, horizon)
+
+        The predictor outputs in scale-normalised space. We rescale the output
+        back to the original [0,1] range using the same per-window max used by
+        the encoder — matching the N-BEATS MaxAbs rescaling at inference.
+        """
+        _, scale = TSEncoder.maxabs_scale(x)           # (B, 1)
+        z = self.encode(x)
+        return self.predictor(z) * scale               # rescale to [0,1] space
 
     # ── OT cost matrix ─────────────────────────────────────────────────────────
 
@@ -208,8 +221,9 @@ class DeepJDOT(nn.Module):
         """
         z_src    = self.encode(x_src)            # (m, d_embed)
         z_tgt    = self.encode(x_tgt)            # (m, d_embed)
-        y_hat_s  = self.predictor(z_src)         # (m, H)
-        y_hat_t  = self.predictor(z_tgt)         # (m, H)
+        # Use forward() so MaxAbs rescaling is applied — predictions are in [0,1] space
+        y_hat_s  = self.forward(x_src)           # (m, H)
+        y_hat_t  = self.forward(x_tgt)           # (m, H)
 
         # Term 1: source supervised loss
         L_src = F.mse_loss(y_hat_s, y_src)

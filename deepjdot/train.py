@@ -219,7 +219,7 @@ def train_deepjdot(
             with torch.no_grad():
                 z_s      = model.encode(x_s)               # (m, d)
                 z_t      = model.encode(x_t)               # (m, d)
-                y_hat_t  = model.predictor(z_t)            # (m, H)
+                y_hat_t  = model.forward(x_t)              # (m, H) — MaxAbs rescaled
                 C        = model.compute_cost_matrix(z_s, z_t, y_s, y_hat_t)
                 C_np     = C.cpu().numpy().astype(np.float64)
 

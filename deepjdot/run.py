@@ -82,11 +82,12 @@ def parse_args():
     p.add_argument("--d-embed",     type=int,   default=128,
                    help="Embedding dimension (OT feature space)")
     p.add_argument("--dropout",     type=float, default=0.1)
-    p.add_argument("--alpha",       type=float, default=0.1,
+    p.add_argument("--alpha",       type=float, default=0.001,
                    help="OT cost weight on feature alignment term. "
-                        "With L2-normalised embeddings distances are in [0,4]; "
-                        "alpha=0.1 makes alignment ~0.2 × MSE source loss")
-    p.add_argument("--lambda-t",    type=float, default=0.5,
+                        "Set very small — forcing feature alignment across large "
+                        "domain gaps (Google 0-5%% vs Alibaba 9-30%% CPU) causes "
+                        "negative transfer. OT mainly acts as label curriculum here.")
+    p.add_argument("--lambda-t",    type=float, default=0.1,
                    help="OT cost weight on label consistency term")
 
     # Training hyperparameters (paper: lr=2e-4, batch=500, Adam)
