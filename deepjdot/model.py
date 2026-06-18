@@ -9,7 +9,7 @@ Unsupervised Domain Adaptation" — Damodaran et al., ECCV 2018.
 The paper solves unsupervised domain adaptation for image classification.
 This implementation adapts it for cloud workload prediction (Google → Alibaba):
 
-  Image CNN encoder   → LSTM time-series encoder
+  Image CNN encoder   → TCN time-series encoder (dilated causal convolutions)
   Softmax classifier  → MLP regression head
   Cross-entropy loss  → MSE regression loss
 
@@ -35,36 +35,58 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm
 
 
 # ─── Encoder g: maps time-series window → latent embedding ────────────────────
+#
+# LSTM was replaced with a TCN (Temporal Convolutional Network) encoder.
+# Reason: LSTM reached source val_mse=0.082 vs N-BEATS' 0.0097 — LSTM has no
+# strong time-series inductive bias, so it cannot learn transferable patterns.
+# TCN uses dilated causal convolutions with residual connections (same as MCTL),
+# which are proven to extract good time-series representations in this codebase.
+
+class _CausalConv1d(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size, dilation, dropout=0.1):
+        super().__init__()
+        self.pad  = (kernel_size - 1) * dilation
+        self.conv = weight_norm(
+            nn.Conv1d(in_ch, out_ch, kernel_size, padding=self.pad, dilation=dilation)
+        )
+        self.net = nn.Sequential(self.conv, nn.ReLU(), nn.Dropout(dropout))
+        self.ds  = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else None
+        self.conv.weight.data.normal_(0, 0.01)
+
+    def forward(self, x):
+        out = self.net(x)
+        if self.pad > 0:
+            out = out[:, :, :-self.pad]
+        return F.relu(out + (x if self.ds is None else self.ds(x)))
+
 
 class TSEncoder(nn.Module):
     """
-    LSTM-based time-series encoder — replaces the CNN image encoder from the
+    TCN-based time-series encoder — replaces the CNN image encoder from the
     original DeepJDOT paper.
 
     Architecture:
-      - MaxAbs per-window normalization (same as N-BEATS): divide each input
-        window by its own absolute max before the LSTM. This makes the encoder
-        scale-invariant: Google windows [0.01-0.05] and Alibaba windows [0.09-0.30]
-        both become [0,1] before entering the LSTM, removing the amplitude mismatch
-        that was causing the LSTM to learn Google-specific scale features.
-      - 2-layer LSTM, hidden_dim units
-      - Take the final hidden state h_T as the sequence representation
-      - Project to d_embed and L2-normalize onto the unit hypersphere
+      - MaxAbs per-window normalisation (same as N-BEATS): scale-invariant
+        across Google [0-5%] and Alibaba [9-30%] CPU ranges.
+      - 3-layer dilated causal TCN (dilations 1, 2, 4) — same design as MCTL.
+        TCN has a stronger time-series inductive bias than LSTM: it explicitly
+        models local patterns at multiple timescales via dilated convolutions.
+      - Global mean pool over time → linear projection → L2-normalise.
     """
 
     def __init__(self, window_size: int = 24, hidden_dim: int = 128,
-                 n_layers: int = 2, d_embed: int = 128, dropout: float = 0.1):
+                 n_layers: int = 3, d_embed: int = 128, dropout: float = 0.1):
         super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=1,
-            hidden_size=hidden_dim,
-            num_layers=n_layers,
-            batch_first=True,
-            dropout=dropout if n_layers > 1 else 0.0,
-        )
+        layers = []
+        for i in range(n_layers):
+            in_ch = 1 if i == 0 else hidden_dim
+            layers.append(_CausalConv1d(in_ch, hidden_dim, kernel_size=3,
+                                        dilation=2**i, dropout=dropout))
+        self.tcn  = nn.Sequential(*layers)
         self.proj = nn.Linear(hidden_dim, d_embed)
         self.d_embed = d_embed
 
@@ -75,11 +97,11 @@ class TSEncoder(nn.Module):
         return x / scale, scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, W) raw → z: (B, d_embed), unit-norm"""
-        x_norm, _ = self.maxabs_scale(x)              # scale-invariant input
-        h, _ = self.lstm(x_norm.unsqueeze(-1))         # (B, W, hidden_dim)
-        z = self.proj(h[:, -1, :])                     # (B, d_embed)
-        return F.normalize(z, p=2, dim=-1)             # unit hypersphere
+        """x: (B, W) → z: (B, d_embed), unit-norm"""
+        x_norm, _ = self.maxabs_scale(x)              # (B, W) scale-invariant
+        h = self.tcn(x_norm.unsqueeze(1))             # (B, hidden_dim, W)
+        z = self.proj(h.mean(dim=2))                  # (B, d_embed) global pool
+        return F.normalize(z, p=2, dim=-1)            # unit hypersphere
 
 
 # ─── Predictor f: maps embedding → workload forecast ──────────────────────────
@@ -116,8 +138,8 @@ class DeepJDOT(nn.Module):
     Args:
         window_size:  Input lookback length (default 24, matches CWPDDA/MCTL)
         horizon:      Steps ahead to predict (default 1)
-        hidden_dim:   LSTM hidden units (128, same as CWPDDA)
-        n_layers:     LSTM layers (2, same depth as CWPDDA)
+        hidden_dim:   TCN hidden channels (128)
+        n_layers:     TCN dilation layers (3, dilations 1,2,4 → receptive field 15)
         d_embed:      Embedding dimension — dimensionality of the OT feature space
         dropout:      LSTM dropout
         alpha:        Weight on feature alignment term ‖z_s − z_t‖² in OT cost.
@@ -134,7 +156,7 @@ class DeepJDOT(nn.Module):
         window_size: int = 24,
         horizon: int = 1,
         hidden_dim: int = 128,
-        n_layers: int = 2,
+        n_layers: int = 3,
         d_embed: int = 128,
         dropout: float = 0.1,
         alpha: float = 0.001,

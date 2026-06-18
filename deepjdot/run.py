@@ -76,9 +76,9 @@ def parse_args():
 
     # DeepJDOT model hyperparameters
     p.add_argument("--hidden-dim",  type=int,   default=128,
-                   help="LSTM hidden units in encoder")
-    p.add_argument("--n-layers",    type=int,   default=2,
-                   help="LSTM layers in encoder")
+                   help="TCN hidden channels in encoder")
+    p.add_argument("--n-layers",    type=int,   default=3,
+                   help="TCN dilation layers (3 = dilations 1,2,4, receptive field 15)")
     p.add_argument("--d-embed",     type=int,   default=128,
                    help="Embedding dimension (OT feature space)")
     p.add_argument("--dropout",     type=float, default=0.1)
