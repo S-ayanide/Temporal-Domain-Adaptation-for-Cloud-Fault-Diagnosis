@@ -155,7 +155,7 @@ def train_deepjdot(
         print(f"           α={model.alpha}  λ_t={model.lambda_t}  "
               f"OT solver={'ot.emd (exact)' if ot_available else 'uniform (POT not installed)'}")
         print(f"           src={len(X_src):,}  tgt_train={len(X_tr):,}  "
-              f"using {n:,} from each per epoch")
+              f"using {n:,} from each per epoch  OT warmup={min(20, epochs//4)} epochs")
 
     val_bs = min(4096, max(batch_size * 8, 512))
 
@@ -193,7 +193,19 @@ def train_deepjdot(
         opt   = torch.optim.Adam(model.parameters(), lr=lr * 0.3)
         sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=8, factor=0.5)
 
+    # OT warmup: ramp alpha and lambda_t from 0 → full over the first warmup_epochs.
+    # Without warmup, full OT weight from epoch 1 overwrites the pre-trained
+    # embeddings → val_mse increases monotonically → immediate early stop.
+    _warmup_epochs = min(20, epochs // 4)
+    _alpha_full    = model.alpha
+    _lambda_full   = model.lambda_t
+
     for epoch in range(start_epoch, epochs + 1):
+        # Linear ramp: 0 at epoch 1, full at epoch warmup_epochs+1
+        warmup_frac    = min(1.0, (epoch - 1) / max(_warmup_epochs, 1))
+        model.alpha    = _alpha_full  * warmup_frac
+        model.lambda_t = _lambda_full * warmup_frac
+
         model.train()
         epoch_loss = 0.0
         epoch_Ls = epoch_Lf = epoch_Ll = 0.0
@@ -271,6 +283,10 @@ def train_deepjdot(
             if verbose:
                 print(f"  Early stop at epoch {epoch}  best_val_mse={best_val:.5f}")
             break
+
+    # Restore full OT weights (warmup only applies during training)
+    model.alpha    = _alpha_full
+    model.lambda_t = _lambda_full
 
     if best_state:
         model.load_state_dict(best_state)
