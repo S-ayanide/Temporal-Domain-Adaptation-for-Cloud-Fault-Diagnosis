@@ -52,7 +52,7 @@ def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
         ("max_target_len", spec.get("max_target_len", 0), args.max_target_len),
         # max_target_train is a training-time cap applied after cache load — not a cache property
     ]
-    bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c != a]
+    bad = [f"  {name}: cache={c!r} current={a!r}" for name, c, a in checks if c is not None and c != a]
     if bad:
         raise RuntimeError(
             "Preprocess cache does not match current flags:\n"
