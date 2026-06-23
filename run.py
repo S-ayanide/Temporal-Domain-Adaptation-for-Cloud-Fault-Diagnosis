@@ -47,6 +47,7 @@ def _validate_preprocess_cache(meta: dict, args: argparse.Namespace) -> None:
         ("max_alibaba",    spec.get("max_alibaba"),    args.max_alibaba),
         ("seed",           spec.get("seed"),           args.seed),
         ("use_dtw",        spec.get("use_dtw"),        (args.paper == "mctl") and (not args.no_dtw)),
+        ("no_chunk",       spec.get("no_chunk"),       args.no_chunk),
         ("window_size",    spec.get("window_size"),    args.window_size),
         ("horizon",        spec.get("horizon"),        args.horizon),
         ("max_target_len", spec.get("max_target_len", 0), args.max_target_len),
@@ -90,6 +91,10 @@ def parse_args():
                    help="Steps ahead to predict")
     p.add_argument("--no-dtw",      action="store_true",
                    help="Skip DTW source selection (faster, slightly worse)")
+    p.add_argument("--no-chunk",    action="store_true",
+                   help="Do NOT split long Alibaba series into 96-pt chunks. "
+                        "Use this to match the paper's full machine-series regime "
+                        "(734 series × median 6841 pts → 200k train windows).")
     p.add_argument("--max-target-len", type=int, default=0, metavar="N",
                    help="Few-shot: keep only Alibaba series with <= N points. "
                         "0 = no filter (default). Try 200 to replicate the paper's "
@@ -241,7 +246,8 @@ def main():
         from data_loader import load_google, load_alibaba
 
         google_series  = load_google(args.google,  max_series=args.max_google)
-        alibaba_series = load_alibaba(args.alibaba, max_series=args.max_alibaba)
+        alibaba_series = load_alibaba(args.alibaba, max_series=args.max_alibaba,
+                                      no_chunk=args.no_chunk)
 
         # ── 2. Preprocess ─────────────────────────────────────────────────────
         print("\n" + "=" * 60)
@@ -264,6 +270,7 @@ def main():
             "max_alibaba":       args.max_alibaba,
             "seed":              args.seed,
             "use_dtw":           use_dtw,
+            "no_chunk":          args.no_chunk,
             "window_size":       args.window_size,
             "horizon":           args.horizon,
             "max_target_len":    args.max_target_len,

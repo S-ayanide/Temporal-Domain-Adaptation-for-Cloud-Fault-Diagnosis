@@ -320,6 +320,7 @@ def load_alibaba(
     max_series: int = 5000,
     nrows: int = 5_000_000,
     seed: int = 42,
+    no_chunk: bool = False,
 ) -> List[np.ndarray]:
     """
     Load Alibaba 2017 container_usage.csv (preferred) or machine_usage.csv.
@@ -436,7 +437,7 @@ def load_alibaba(
     # 144-point chunks so each chunk resembles one 12-hour container lifetime.
     # This matches the paper's regime where transfer from Google is actually needed.
     median_len = float(np.median([len(s) for s in all_series]))
-    if median_len > 300:
+    if median_len > 300 and not no_chunk:
         chunk_len = 96   # 8h at 5-min sampling; fits MCTL's <=100-pt few-shot filter
         chunked: List[np.ndarray] = []
         for s in all_series:
@@ -447,6 +448,8 @@ def load_alibaba(
             all_series = chunked
             print(f"  [short-series] Split into {len(all_series)} {src} chunks of "
                   f"{chunk_len} pts (12h container lifetime regime).")
+    elif no_chunk:
+        print(f"  [no-chunk] Using full machine series (median {int(median_len)} pts).")
 
     rng.shuffle(all_series)
     all_series = all_series[:max_series]
