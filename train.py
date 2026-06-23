@@ -100,6 +100,9 @@ def train_cwpdda(
     # inference.  This is more informative than random pairing and lets the LSTM
     # see cross-attention K/V that is actually similar to the target query Q.
     model.register_source_ref(X_src)
+    # Move the bank to GPU once so _match_source doesn't copy it every batch.
+    if device.startswith("cuda") and model._src_ref is not None:
+        model._src_ref = model._src_ref.to(device)
 
     dl_t = DataLoader(TensorDataset(torch.from_numpy(X_tr).float(),
                                      torch.from_numpy(y_tr).float()),
@@ -191,7 +194,7 @@ def train_cwpdda(
         else:
             no_improve += 1
 
-        if verbose and epoch % 20 == 0:
+        if verbose and epoch % 5 == 0:
             print(f"  epoch {epoch:3d}/{epochs}  "
                   f"loss={epoch_loss:.5f}  "
                   f"Ly={epoch_Ly:.5f}  Lf={epoch_Lf:.4f}  Ld={epoch_Ld:.4f}  "
