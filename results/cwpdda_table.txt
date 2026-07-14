@@ -1,0 +1,8 @@
+CWPDDA Results — Google → Alibaba 2017
+Target: MAE=2.4183  MAPE=8.66%  RMSE=2.5859
+
+Method             MAE    MAPE %      RMSE
+---------------------------------------------
+ARIMA          19.3475    148.34   29.3543
+LSTM           16.7915    134.53   22.1620
+CWPDDA         16.3801    126.07   22.0359

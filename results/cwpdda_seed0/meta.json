@@ -1,0 +1,22 @@
+{
+  "n_src_series": 5976,
+  "n_tgt_series": 2844,
+  "src_windows": 200000,
+  "tgt_train_windows": 200000,
+  "tgt_val_windows": 66666,
+  "tgt_test_windows": 66666,
+  "window_size": 24,
+  "horizon": 1,
+  "window_step": 5,
+  "cache_spec": {
+    "max_google": 9999,
+    "max_alibaba": 9999,
+    "seed": 0,
+    "use_dtw": false,
+    "no_chunk": true,
+    "window_size": 24,
+    "horizon": 1,
+    "max_target_len": 0,
+    "max_target_train": 0
+  }
+}

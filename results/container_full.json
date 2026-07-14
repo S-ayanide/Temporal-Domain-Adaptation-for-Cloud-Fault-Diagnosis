@@ -3,18 +3,21 @@
     "n_src_series": 2009,
     "n_tgt_series": 3000,
     "src_windows": 125836,
-    "tgt_train_windows": 31500,
-    "tgt_val_windows": 9000,
-    "tgt_test_windows": 4500,
+    "tgt_train_windows": 50400,
+    "tgt_val_windows": 14400,
+    "tgt_test_windows": 7200,
     "window_size": 24,
     "horizon": 1,
     "window_step": 5,
     "cache_spec": {
-      "max_windows": 200000,
+      "max_google": 3000,
+      "max_alibaba": 3000,
+      "seed": 42,
       "use_dtw": false,
       "window_size": 24,
       "horizon": 1,
-      "max_target_len": 0
+      "max_target_len": 0,
+      "max_target_train": 0
     }
   },
   "dtw_pairs": [

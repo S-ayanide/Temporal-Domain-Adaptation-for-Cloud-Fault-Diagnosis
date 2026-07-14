@@ -1,0 +1,8 @@
+MC-CWPDDA Results — Google → Alibaba 2017
+Baselines: CWPDDA MAE=2.4183  MAPE=8.66%  RMSE=2.5859
+
+Method               MAE    MAPE %      RMSE
+-----------------------------------------------
+ARIMA             7.4017     19.86   10.6453
+LSTM              6.8820     18.31    9.3661
+MC-CWPDDA         6.8675     17.87    9.3706
