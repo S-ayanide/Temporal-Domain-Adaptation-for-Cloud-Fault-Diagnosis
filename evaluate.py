@@ -22,7 +22,7 @@ MCTL Google→Alibaba JobA (Table 3):
 """
 
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 
@@ -83,6 +83,126 @@ def mctl_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
         "sMAPE":    smape(y_true, y_pred),
         "Variance": variance_err(y_true, y_pred),
     }
+
+
+# ─── Classification metrics ───────────────────────────────────────────────────
+
+def classification_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    threshold: Optional[float] = None,
+) -> Dict[str, float]:
+    """
+    Convert continuous CPU-utilisation predictions → binary (high-load / normal)
+    and compute Accuracy, Precision, Recall, F1, MCC, G-Mean.
+
+    threshold (on the 0-1 normalised scale):
+      - If None: auto-set to the 70th percentile of y_true (top 30% = "high load").
+      - Pass a fixed value (e.g. 0.7) to override.
+
+    Returns a dict that also records the threshold used, the positive-class rate,
+    and flags metrics that are undefined (NaN) due to degenerate predictions.
+    """
+    try:
+        from sklearn.metrics import (
+            accuracy_score, precision_score, recall_score,
+            f1_score, matthews_corrcoef, confusion_matrix,
+        )
+    except ImportError:
+        raise ImportError("scikit-learn is required for classification metrics: pip install scikit-learn")
+
+    y_true = y_true.squeeze().astype(float)
+    y_pred = y_pred.squeeze().astype(float)
+
+    if threshold is None:
+        threshold = float(np.percentile(y_true, 70))
+
+    y_true_bin = (y_true >= threshold).astype(int)
+    y_pred_bin = (y_pred >= threshold).astype(int)
+
+    n_pos_true = int(y_true_bin.sum())
+    n_pos_pred = int(y_pred_bin.sum())
+
+    nan = float("nan")
+
+    # Degenerate: all predictions in one class → most metrics undefined
+    if len(np.unique(y_pred_bin)) < 2:
+        return {
+            "Accuracy":  float(accuracy_score(y_true_bin, y_pred_bin)),
+            "Precision": nan,
+            "Recall":    nan,
+            "F1":        nan,
+            "MCC":       nan,
+            "G-Mean":    nan,
+            "threshold": threshold,
+            "pct_positive_true": round(n_pos_true / len(y_true_bin), 4),
+            "pct_positive_pred": round(n_pos_pred / len(y_pred_bin), 4),
+            "note": "degenerate predictions (all one class)",
+        }
+
+    cm = confusion_matrix(y_true_bin, y_pred_bin)
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        g_mean = float(np.sqrt(sensitivity * specificity))
+    else:
+        g_mean = nan
+
+    return {
+        "Accuracy":  float(accuracy_score(y_true_bin, y_pred_bin)),
+        "Precision": float(precision_score(y_true_bin, y_pred_bin, zero_division=0)),
+        "Recall":    float(recall_score(y_true_bin, y_pred_bin, zero_division=0)),
+        "F1":        float(f1_score(y_true_bin, y_pred_bin, zero_division=0)),
+        "MCC":       float(matthews_corrcoef(y_true_bin, y_pred_bin)),
+        "G-Mean":    g_mean,
+        "threshold": threshold,
+        "pct_positive_true": round(n_pos_true / len(y_true_bin), 4),
+        "pct_positive_pred": round(n_pos_pred / len(y_pred_bin), 4),
+    }
+
+
+def combined_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    scale: str = "cwpdda",   # "cwpdda" (×100) | "mctl" (0-1 normalised)
+    threshold: Optional[float] = None,
+) -> Dict[str, object]:
+    """
+    Return both regression metrics and classification metrics in one dict.
+
+    y_true / y_pred should be on the 0-1 normalised scale coming in.
+    scale="cwpdda"  → regression metrics are computed on ×100 scale (matching paper)
+    scale="mctl"    → regression metrics stay on 0-1 scale
+    classification  → always on 0-1 scale (threshold applies before ×100)
+    """
+    reg = cwpdda_metrics(y_true, y_pred) if scale == "cwpdda" else mctl_metrics(y_true, y_pred)
+    clf = classification_metrics(y_true, y_pred, threshold=threshold)
+    return {"regression": reg, "classification": clf}
+
+
+# ─── Prediction helpers ───────────────────────────────────────────────────────
+
+@torch.no_grad()
+def predict_model(model, X_test: np.ndarray, device: str = "cpu",
+                  batch_size: int = 2048) -> np.ndarray:
+    """Run batched inference for any model that has .predict_numpy_batched()."""
+    model.eval()
+    return model.predict_numpy_batched(X_test, device, batch_size=batch_size)
+
+
+@torch.no_grad()
+def predict_mctl_model(model, X_test: np.ndarray, device: str = "cpu",
+                       batch_size: int = 2048) -> np.ndarray:
+    """Run batched inference for MCTL (uses .predict() returning tensor)."""
+    model.eval()
+    if len(X_test) == 0:
+        return np.empty((0, 1), dtype=np.float32)
+    parts = []
+    for i in range(0, len(X_test), batch_size):
+        xb = torch.from_numpy(X_test[i: i + batch_size]).float().to(device)
+        parts.append(model.predict(xb).cpu().numpy())
+    return np.concatenate(parts, axis=0)
 
 
 # ─── Evaluate models ──────────────────────────────────────────────────────────
