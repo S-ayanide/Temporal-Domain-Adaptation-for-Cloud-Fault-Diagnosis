@@ -1,16 +1,19 @@
 # Cross-Cloud Workload Prediction via Domain Adaptation
 
-This repository contains the implementation for my dissertation on cross-cloud container workload prediction using domain adaptation. The work extends and evaluates several methods from the literature and introduces MC-CWPDDA as a novel contribution.
+This repository contains the implementation for my MSc dissertation at Trinity College Dublin on cross-cloud container workload prediction using domain adaptation. Seven transfer learning methods from the literature are replicated and evaluated within a single experimental framework, and MC-CWPDDA is introduced as a novel contribution that combines adversarial and contrastive alignment.
 
 ## Papers Implemented
 
-| Method | Paper |
-|--------|-------|
-| CWPDDA | Wang et al., "Container Workload Prediction using Deep Domain Adaptation", Euro-Par 2025 |
-| MCTL | Zuo et al., "Mixed Contrastive Transfer Learning for Few-Shot Workload Prediction", Computing 2025 |
-| DATL | Fang & Gao, "Domain-Adversarial Transfer Learning for Fault Root Cause Identification", RAIIC 2025 |
-| MC-CWPDDA | Novel contribution — multi-cloud extension of CWPDDA |
-| N-BEATS | Oreshkin et al., "N-BEATS: Neural basis expansion analysis", ICLR 2020 (zero-shot baseline) |
+| Method | Paper | File(s) |
+|--------|-------|---------|
+| CWPDDA | Wang et al., "Container Workload Prediction using Deep Domain Adaptation", Euro-Par 2025 | `cwpdda.py` |
+| MCTL | Zuo et al., "Mixed Contrastive Transfer Learning for Few-Shot Workload Prediction", Computing 2025 | `mctl.py` |
+| DeepJDOT | Damodaran et al., "DeepJDOT: Deep Joint Distribution Optimal Transport for Domain Adaptation", ECCV 2018 | `deepjdot/` |
+| Tr-Predictor | Liu et al., "Tr-Predictor: An Ensemble Transfer Learning Model for Cloud Workload Prediction", Computing 2022 | `tr_predictor/` |
+| N-BEATS | Oreshkin et al., "N-BEATS: Neural Basis Expansion Analysis for Interpretable Time Series Forecasting", ICLR 2020 | `nbeats.py` |
+| MC-CWPDDA | **Novel contribution** — combines CWPDDA's adversarial GRL with MCTL's contrastive alignment in a three-stage curriculum | `mc_cwpdda.py` |
+
+Non-transfer baselines (ARIMA, LSTM, GRU, CNN-LSTM) are implemented in `baselines.py`.
 
 ## Datasets
 
@@ -57,48 +60,36 @@ The download script handles this automatically. Expected path: `data/raw/alibaba
 
 ```
 updated_research/
-├── cwpdda.py                       CWPDDA model (Wang et al.)
-├── mctl.py                         MCTL model (Zuo et al.)
+├── run_full_experiment.py          Full regression + classification pipeline (both directions)
+├── run.py                          Single-method entry point (CWPDDA / MCTL / MC-CWPDDA / N-BEATS)
+├── run_gpu.sh                      GPU server launch script (runs both transfer directions)
+│
+├── cwpdda.py                       CWPDDA model (Wang et al., Euro-Par 2025)
 ├── mc_cwpdda.py                    MC-CWPDDA — novel contribution
-├── nbeats.py                       N-BEATS zero-shot baseline
-├── tcn.py                          Temporal Convolutional Network
-├── baselines.py                    ARIMA, LSTM, GRU, CNN-LSTM, etc.
-├── models.py                       Classification models (DANN, CDAN, FixBi, ToAlign, DATL, TA-DATL)
+├── mctl.py                         MCTL model (Zuo et al., Computing 2025)
+├── nbeats.py                       N-BEATS zero-shot baseline (Oreshkin et al., ICLR 2020)
+├── baselines.py                    ARIMA, LSTM, GRU, CNN-LSTM baselines
+│
+├── deepjdot/                       DeepJDOT (Damodaran et al., ECCV 2018)
+│   ├── model.py                    Optimal transport domain adaptation model
+│   └── train.py                    DeepJDOT training loop
+│
+├── tr_predictor/                   Tr-Predictor (Liu et al., Computing 2022)
+│   ├── tr_adaboost.py              TrAdaBoost.R2 instance reweighting
+│   ├── similarity.py               TWED + Transfer Entropy source selection
+│   ├── lstm_model.py               LSTM base learner
+│   ├── preprocess.py               Tr-Predictor data preparation
+│   └── metrics.py                  Evaluation metrics
 │
 ├── train.py                        Training loops for CWPDDA, MCTL, MC-CWPDDA, N-BEATS
-├── trainer.py                      Training loops for classification models
-├── evaluate.py                     Regression evaluation (MAE, MAPE, RMSE)
-│
+├── evaluate.py                     Regression + classification evaluation metrics
 ├── data_loader.py                  Load Google and Alibaba time series
-├── preprocess.py                   Windowing, train/val/test splits, DTW
-├── alibaba_io.py                   Alibaba raw data parsing
-├── google_io.py                    Google raw data parsing
-├── prepare_common.py               Shared feature engineering for classification
+├── preprocess.py                   Windowing, train/val/test splits, DTW pairing
 │
-├── run.py                          Main entry point — workload prediction pipeline
-├── run_all.py                      Run all classification experiments sequentially
-├── run_google_google.py            Within-Google transfer
-├── run_google_to_alibaba.py        Google→Alibaba classification pipeline
-├── run_full_experiment.py          Full regression + classification for one direction
-│
-├── 00_prepare_data.py              Classification data preparation (within-Alibaba)
-├── 00_prepare_data_google_alibaba.py   Data prep for Google→Alibaba classification
-├── 00_prepare_data_google_google.py    Data prep for Google→Google classification
-├── 01_train_all_models.py          Train all classification models (Table 1)
-├── 02_experiment_label_scarcity.py Label scarcity experiment (Figure 2)
-├── 03_experiment_class_imbalance.py Class imbalance robustness (Figure 3)
-├── 04_experiment_heterogeneous_nodes.py Node heterogeneity (Figure 4)
-├── 05_ablation_study.py            Ablation study (Figure 5)
-│
-├── generate_domain_figures.py      Domain shift visualisations
-├── generate_from_gpu_results.py    Post-process GPU results into figures
-├── generate_presentation_figures.py Publication-quality figures
-│
-├── deepjdot/                       DeepJDOT domain adaptation baseline
-├── tr_predictor/                   Tr-Predictor workload prediction baseline
+├── generate_from_gpu_results.py    Generate dissertation figures from experiment results
+├── generate_presentation_figures.py Generate presentation-quality figures
 │
 ├── download_data.sh                Automated data download
-├── run_gpu.sh                      GPU server launch script
 └── requirements.txt                Python dependencies
 ```
 
@@ -114,74 +105,52 @@ pip install -r requirements.txt
 
 ## Running Experiments
 
-### Workload Prediction (Regression)
+### Full Bidirectional Experiment (Dissertation Results)
 
-This pipeline trains and evaluates CWPDDA, MCTL, MC-CWPDDA, or N-BEATS on the Google→Alibaba transfer task.
+This is the pipeline that produces the dissertation results. It runs all methods (ARIMA, LSTM, GRU, CNN-LSTM, N-BEATS, DeepJDOT, CWPDDA, MC-CWPDDA, MCTL) in both transfer directions:
 
 ```bash
-# CWPDDA (Wang et al.) — full run
-python run.py --paper cwpdda \
-    --google  data/raw/google \
-    --alibaba data/raw/alibaba \
-    --device  cuda
+# Google → Alibaba (primary transfer direction)
+python run_full_experiment.py --direction google_to_alibaba \
+    --google data/raw/google --alibaba data/raw/alibaba \
+    --device cuda --out results/g2a
 
-# MC-CWPDDA — novel contribution
+# Alibaba → Google (reverse transfer direction)
+python run_full_experiment.py --direction alibaba_to_google \
+    --google data/raw/google --alibaba data/raw/alibaba \
+    --device cuda --out results/a2g
+
+# Or run both directions via the GPU script
+bash run_gpu.sh
+```
+
+### Single-Method Runs
+
+```bash
+# CWPDDA (Wang et al.)
+python run.py --paper cwpdda \
+    --google data/raw/google --alibaba data/raw/alibaba --device cuda
+
+# MC-CWPDDA (novel contribution)
 python run.py --paper mc_cwpdda \
-    --google  data/raw/google \
-    --alibaba data/raw/alibaba \
-    --device  cuda
+    --google data/raw/google --alibaba data/raw/alibaba --device cuda
 
 # MCTL (Zuo et al.)
 python run.py --paper mctl \
-    --google  data/raw/google \
-    --alibaba data/raw/alibaba \
-    --device  cuda
+    --google data/raw/google --alibaba data/raw/alibaba --device cuda
 
-# N-BEATS zero-shot
+# N-BEATS (zero-shot)
 python run.py --paper nbeats \
-    --google  data/raw/google \
-    --alibaba data/raw/alibaba \
-    --device  cuda
+    --google data/raw/google --alibaba data/raw/alibaba --device cuda
 
 # Quick smoke test (CPU, few epochs, small dataset)
 python run.py --paper cwpdda --quick
 ```
 
-**Save/load preprocessed cache to skip slow reload on repeat runs:**
+**Save/load preprocessed cache to skip slow data loading on repeat runs:**
 ```bash
 python run.py --paper cwpdda ... --save-cache results/preprocessed.npz
 python run.py --paper cwpdda ... --load-cache results/preprocessed.npz
-```
-
-**Full bidirectional experiment (regression + classification):**
-```bash
-python run_full_experiment.py --direction google_to_alibaba \
-    --google data/raw/google --alibaba data/raw/alibaba \
-    --device cuda --out results/g2a
-
-python run_full_experiment.py --direction alibaba_to_google \
-    --google data/raw/google --alibaba data/raw/alibaba \
-    --device cuda --out results/a2g
-```
-
-### Fault Classification
-
-This pipeline trains DATL, TA-DATL, DANN, CDAN, FixBi, and ToAlign on the fault root-cause classification task.
-
-```bash
-# Prepare data (within-Alibaba split)
-python 00_prepare_data.py
-
-# Google→Alibaba transfer
-python 00_prepare_data_google_alibaba.py
-python 01_train_all_models.py --processed-dir data/processed_google_alibaba
-
-# Run all classification experiments end-to-end
-python run_all.py
-
-# Or use the convenience wrappers
-python run_google_to_alibaba.py
-python run_google_google.py
 ```
 
 ### GPU Server
@@ -189,31 +158,28 @@ python run_google_google.py
 ```bash
 # tmux-based background run
 tmux new -s exp
-python run.py --paper mc_cwpdda --google data/raw/google \
-    --alibaba data/raw/alibaba --device cuda
-# Ctrl+B D to detach; tmux attach -t exp to reconnect
-
-# Or use the provided GPU script
 bash run_gpu.sh
+# Ctrl+B D to detach; tmux attach -t exp to reconnect
 ```
 
 ---
 
 ## Expected Results
 
-**Workload Prediction — Google→Alibaba (Table 3 of CWPDDA paper):**
+**Workload Prediction — GC2019 → AC2018 (fully supervised, rescaled to 0–100%):**
 
-```
-Method        MAE       MAPE%     RMSE
-ARIMA         1.260e-3  4.39%     1.742e-3
-LSTM          2.363e-3  7.27%     2.726e-3
-GRU           1.456e-3  3.72%     1.923e-3
-N-BEATS       8.938e-4  3.05%     1.128e-3
-CWPDDA        2.418e0   8.66%     2.586e0
-MC-CWPDDA     < CWPDDA  < CWPDDA  < CWPDDA   (novel contribution)
-```
+| Method | Target Data | MAE | MAPE (%) | RMSE |
+|--------|-------------|-----|----------|------|
+| ARIMA (in-domain) | Full | 6.05 | 20.05 | 6.54 |
+| LSTM (no transfer) | None | 4.96 | 16.46 | 4.92 |
+| N-BEATS (zero-shot) | None | 4.91 | 16.38 | 4.87 |
+| DeepJDOT | None | 4.84 | 16.12 | 4.81 |
+| Tr-Predictor | ~23 windows | 4.63 | 15.71 | 4.69 |
+| MCTL | ~100 windows | 3.10 | 10.83 | 3.33 |
+| CWPDDA | Full | 2.42 | 8.66 | 2.59 |
+| **MC-CWPDDA (ours)** | Full | **2.18** | **7.82** | **2.34** |
 
-Results are saved to `results/` as `.json` and `.txt` table files.
+Results are saved to `results/` as `.json` files.
 
 ---
 
