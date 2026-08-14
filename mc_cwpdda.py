@@ -82,15 +82,9 @@ def papn_contrastive_loss(
     tau: float = 1.0,           # kept for API compat; effective temp = 0.1
 ) -> torch.Tensor:
     """
-    PAPN loss: attracts anchor to the λ-weighted mixed positive, repels from
-    K in-batch negatives drawn from h_pos_src.
-
-    Implemented via InfoNCE (NT-Xent) with temperature 0.1.  The original
-    student-t kernel formulation had an inversion bug: (1 + cos/τ)^(-μ) is
-    LOWER for similar pairs (cos≈1 → 0.5) and HIGHER for dissimilar ones
-    (cos≈0 → 1.0), causing the loss to push in the wrong direction and get
-    stuck at ln(2) throughout training.  InfoNCE has well-understood gradient
-    flow and recovers the same PAPN semantics (proportional mixed positive).
+    PAPN loss via InfoNCE (temperature 0.1): attracts anchor to λ-weighted
+    mixed positive, repels from K in-batch negatives. Original student-t
+    kernel had inverted similarity; InfoNCE fixes gradient flow.
     """
     B = h_anchor.size(0)
     K = min(n_neg, B - 1)

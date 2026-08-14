@@ -67,19 +67,9 @@ def mixup(x, alpha=1.0):
 
 def _papn(zm, zp1, zp2, zneg, lam, tau=1.0):
     """
-    Compute positive probability for mixed anchor zm via softmax over
-    [positive, neg_1, ..., neg_K] — InfoNCE-style.
-
-    Why not the original ratio formula:
-      The original used student-t kernel (1+cos/τ)^(-μ) which maps cos≈0
-      (typical for random 128-dim vectors) to ≈1.0 for ALL pairs.
-      Both s_pos and s_neg collapse to 1 → ratio = 1 → clamped to 1-1e-7
-      for BOTH source and target → KL(p||p) = 0 → no gradient ever.
-
-    Softmax fix: with K=8 negatives, random init gives p ≈ 1/9 ≈ 0.11.
-    After source encoder pretraining, ps rises toward 1 (positives closer
-    than negatives in representation space).  Target pt starts at 0.11 →
-    KL(ps || pt) >> 0 → gradient pushes target encoder toward source structure.
+    Positive probability for mixed anchor zm via InfoNCE softmax over
+    [positive, neg_1, ..., neg_K]. Uses softmax instead of the original
+    student-t kernel ratio, which collapses to zero gradient at random init.
     """
     def cos_sim(a, b):
         an = F.normalize(a, dim=-1)

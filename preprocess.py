@@ -1,25 +1,9 @@
 """
 preprocess.py
 =============
-Preprocessing for both CWPDDA and MCTL.
-
-Key fixes vs original:
-  1. CWPDDA does NOT filter by series length — it uses all machines.
-     The paper says "containers meeting small sample condition" but the
-     architecture works on any length. Filtering to MAX_TARGET_LEN=100
-     was discarding 99% of Alibaba data and leaving only 734 short series.
-
-  2. DTW is for MCTL only (source selection for few-shot transfer).
-     For CWPDDA, skip DTW entirely — use all Google series as source.
-
-  3. Source/target balance: cap both at MAX_WINDOWS_PER_DOMAIN so the
-     training loop sees a balanced dataset. 162k source vs 2.9M target
-     means the model trains mostly on target patterns without enough
-     source signal for domain alignment.
-
-  4. WINDOW_STEP increased to 5 (was 1) to reduce redundancy.
-     Step=1 on a 4000-point series gives 3977 nearly-identical windows.
-     Step=5 gives ~795 more diverse windows per machine.
+Preprocessing for CWPDDA and MCTL. CWPDDA uses all series without filtering;
+MCTL uses DTW-based source selection on length-filtered series.
+Window step=5 reduces redundancy from near-identical consecutive windows.
 """
 
 from __future__ import annotations
@@ -214,26 +198,9 @@ def build_source_target(
     max_target_train: int = 0,    # 0 = no cap; >0 = cap train windows (few-shot regime)
 ) -> dict:
     """
-    Preprocessing pipeline for CWPDDA (and optionally MCTL).
-
-    CWPDDA setup (Wang et al., Euro-Par 2025):
-      - Source = ALL Google series (no length filter — the paper uses
-        all available Google containers, not just long ones)
-      - Target = ALL Alibaba machines (no length filter)
-      - No DTW — domain alignment is handled by the GRL during training
-      - Windows capped at max_windows per domain for balance
-
-      --max-target-len N (optional, recommended for CWPDDA):
-        The paper uses "containers meeting small sample condition" — only
-        short-lived Alibaba containers (few data points).  With all ~200k
-        target windows, a plain LSTM has enough data and transfer learning
-        doesn't help.  Setting max_target_len=200 replicates the few-shot
-        regime where Google knowledge is genuinely needed.
-
-    MCTL setup (Zuo et al., 2024) — set use_dtw=True:
-      - Source = Google series >= MCTL_MIN_SOURCE_LEN
-      - Target = Alibaba series <= MCTL_MAX_TARGET_LEN  (few-shot)
-      - DTW selects the most similar source for each target
+    Build train/val/test splits for CWPDDA and MCTL.
+    CWPDDA: no length filtering, no DTW, windows capped for balance.
+    MCTL (use_dtw=True): length-filtered, DTW-based source selection.
     """
     rng = np.random.default_rng(seed)
 
@@ -295,12 +262,8 @@ def build_source_target(
     src_X, src_y = make_windows_all(src_norm, window_size, horizon,
                                      window_step, max_windows)
 
-    # Target: split series into train/val/test groups.
-    # Short series (e.g. 144-pt chunks): per-series 70/20/10 leaves only 14 points
-    # for test — not enough for even one window (need window_size+horizon = 25).
-    # Solution: if median series length <= 4×(window_size+horizon), split the LIST
-    # of series rather than splitting within each series.
-    # Use series-level split when 10% of median series length < one window
+    # For short series, split series-list rather than within each series
+    # to ensure test sets have enough points for at least one window.
     test_split_pts = float(np.median([len(s) for s in tgt_norm])) * (1 - TRAIN_RATIO - VAL_RATIO) if tgt_norm else 0
 
     if test_split_pts < (window_size + horizon):

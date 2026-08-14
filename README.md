@@ -1,62 +1,110 @@
-# Workload Prediction — MCTL Replication
-## Google Cluster Trace 2019 → Alibaba 2017
+# Cross-Cloud Workload Prediction via Domain Adaptation
 
-Replicates Tables 3/4/5 from:
-> "Mixed contrastive transfer learning for few-shot workload prediction in the cloud"
-> Zuo et al., *Computing* (2025)
+This repository contains the implementation for my dissertation on cross-cloud container workload prediction using domain adaptation. The work extends and evaluates several methods from the literature and introduces MC-CWPDDA as a novel contribution.
 
----
+## Papers Implemented
 
-## File layout expected
+| Method | Paper |
+|--------|-------|
+| CWPDDA | Wang et al., "Container Workload Prediction using Deep Domain Adaptation", Euro-Par 2025 |
+| MCTL | Zuo et al., "Mixed Contrastive Transfer Learning for Few-Shot Workload Prediction", Computing 2025 |
+| DATL | Fang & Gao, "Domain-Adversarial Transfer Learning for Fault Root Cause Identification", RAIIC 2025 |
+| MC-CWPDDA | Novel contribution — multi-cloud extension of CWPDDA |
+| N-BEATS | Oreshkin et al., "N-BEATS: Neural basis expansion analysis", ICLR 2020 (zero-shot baseline) |
+
+## Datasets
+
+> **Data is not included in this repository.** Download instructions are below.
+
+### Google Cluster Trace 2019
+
+Available from Google Cloud Storage. Each cell (a–h) has multiple shards:
 
 ```
-workload_prediction/
-├── data/
-│   ├── raw/
-│   │   ├── google/
-│   │   │   ├── instance_usage-000000000000.json.gz    ← your 23 shards
-│   │   │   ├── instance_usage-000000000001.json.gz
-│   │   │   └── ...
-│   │   └── alibaba/
-│   │       └── machine_usage.csv                      ← Alibaba 2017
-├── data_loader.py
-├── preprocess.py
-├── train.py
-├── evaluate.py
-├── run.py
-├── models/
-│   ├── __init__.py
-│   ├── tcn.py
-│   ├── mctl.py
-│   └── baselines.py
-└── requirements.txt
-```
-
-### Google shards — where to put them
-
-Put all 23 `.json.gz` shards directly in `data/raw/google/`:
-```
-data/raw/google/instance_usage-000000000000.json.gz
-data/raw/google/instance_usage-000000000001.json.gz
+https://storage.googleapis.com/clusterdata_2019_a/instance_usage-000000000000.json.gz
+https://storage.googleapis.com/clusterdata_2019_a/instance_usage-000000000001.json.gz
 ...
 ```
-They can also be in subfolders like `data/raw/google/cell_a/` — the loader
-scans recursively.
 
-If you have converted them to `.parquet` already, that works too.
+Replace `a` with `b`–`h` for other cells. Shards are numbered sequentially; stop downloading when you get a 404.
 
-### Alibaba 2017 — what file to use
+Use the provided script to download automatically:
+```bash
+bash download_data.sh                  # all cells + Alibaba
+bash download_data.sh --cells a b      # only cells a and b
+bash download_data.sh --max-shards 5   # first 5 shards per cell
+bash download_data.sh --google         # Google only
+```
 
-The loader tries in this order:
-1. `machine_usage.csv`      — CPU per physical machine (best for this task)
-2. `batch_instance.csv`     — CPU per batch job instance
-3. `container_usage.csv`    — CPU per container
+Expected path: `data/raw/google/cell_a/instance_usage-*.json.gz`
 
-Put whichever you have in `data/raw/alibaba/`.
+### Alibaba Cluster Trace 2018
+
+```
+http://aliopentrace.oss-cn-beijing.aliyuncs.com/v2018Traces/machine_usage.tar.gz
+```
+
+The download script handles this automatically. Expected path: `data/raw/alibaba/machine_usage.csv`
+
+**File format expected by the loader (in order of preference):**
+1. `machine_usage.csv` — CPU per physical machine (primary)
+2. `batch_instance.csv` — CPU per batch job instance
+3. `container_usage.csv` — CPU per container
 
 ---
 
-## Install
+## Directory Structure
+
+```
+updated_research/
+├── cwpdda.py                       CWPDDA model (Wang et al.)
+├── mctl.py                         MCTL model (Zuo et al.)
+├── mc_cwpdda.py                    MC-CWPDDA — novel contribution
+├── nbeats.py                       N-BEATS zero-shot baseline
+├── tcn.py                          Temporal Convolutional Network
+├── baselines.py                    ARIMA, LSTM, GRU, CNN-LSTM, etc.
+├── models.py                       Classification models (DANN, CDAN, FixBi, ToAlign, DATL, TA-DATL)
+│
+├── train.py                        Training loops for CWPDDA, MCTL, MC-CWPDDA, N-BEATS
+├── trainer.py                      Training loops for classification models
+├── evaluate.py                     Regression evaluation (MAE, MAPE, RMSE)
+│
+├── data_loader.py                  Load Google and Alibaba time series
+├── preprocess.py                   Windowing, train/val/test splits, DTW
+├── alibaba_io.py                   Alibaba raw data parsing
+├── google_io.py                    Google raw data parsing
+├── prepare_common.py               Shared feature engineering for classification
+│
+├── run.py                          Main entry point — workload prediction pipeline
+├── run_all.py                      Run all classification experiments sequentially
+├── run_google_google.py            Within-Google transfer
+├── run_google_to_alibaba.py        Google→Alibaba classification pipeline
+├── run_full_experiment.py          Full regression + classification for one direction
+│
+├── 00_prepare_data.py              Classification data preparation (within-Alibaba)
+├── 00_prepare_data_google_alibaba.py   Data prep for Google→Alibaba classification
+├── 00_prepare_data_google_google.py    Data prep for Google→Google classification
+├── 01_train_all_models.py          Train all classification models (Table 1)
+├── 02_experiment_label_scarcity.py Label scarcity experiment (Figure 2)
+├── 03_experiment_class_imbalance.py Class imbalance robustness (Figure 3)
+├── 04_experiment_heterogeneous_nodes.py Node heterogeneity (Figure 4)
+├── 05_ablation_study.py            Ablation study (Figure 5)
+│
+├── generate_domain_figures.py      Domain shift visualisations
+├── generate_from_gpu_results.py    Post-process GPU results into figures
+├── generate_presentation_figures.py Publication-quality figures
+│
+├── deepjdot/                       DeepJDOT domain adaptation baseline
+├── tr_predictor/                   Tr-Predictor workload prediction baseline
+│
+├── download_data.sh                Automated data download
+├── run_gpu.sh                      GPU server launch script
+└── requirements.txt                Python dependencies
+```
+
+---
+
+## Installation
 
 ```bash
 pip install -r requirements.txt
@@ -64,105 +112,122 @@ pip install -r requirements.txt
 
 ---
 
-## Run
+## Running Experiments
 
-### Quick test (no DTW, fewer epochs — runs in ~5 min on CPU)
+### Workload Prediction (Regression)
+
+This pipeline trains and evaluates CWPDDA, MCTL, MC-CWPDDA, or N-BEATS on the Google→Alibaba transfer task.
+
 ```bash
-python run.py \
+# CWPDDA (Wang et al.) — full run
+python run.py --paper cwpdda \
     --google  data/raw/google \
     --alibaba data/raw/alibaba \
-    --no-dtw \
-    --stage1-epochs 20 \
-    --stage2a-epochs 20 \
-    --stage2b-epochs 20 \
-    --skip-arima
-```
+    --device  cuda
 
-### Full replication (matches paper settings)
-```bash
-python run.py \
+# MC-CWPDDA — novel contribution
+python run.py --paper mc_cwpdda \
     --google  data/raw/google \
     --alibaba data/raw/alibaba \
-    --device  cuda \
-    --stage1-epochs 50 \
-    --stage2a-epochs 50 \
-    --stage2b-epochs 50
+    --device  cuda
+
+# MCTL (Zuo et al.)
+python run.py --paper mctl \
+    --google  data/raw/google \
+    --alibaba data/raw/alibaba \
+    --device  cuda
+
+# N-BEATS zero-shot
+python run.py --paper nbeats \
+    --google  data/raw/google \
+    --alibaba data/raw/alibaba \
+    --device  cuda
+
+# Quick smoke test (CPU, few epochs, small dataset)
+python run.py --paper cwpdda --quick
 ```
 
-### GPU server (tmux recommended)
+**Save/load preprocessed cache to skip slow reload on repeat runs:**
 ```bash
-tmux new -s mctl
-python run.py --google data/raw/google --alibaba data/raw/alibaba --device cuda
-# Ctrl+B D to detach; tmux attach -t mctl to reattach
+python run.py --paper cwpdda ... --save-cache results/preprocessed.npz
+python run.py --paper cwpdda ... --load-cache results/preprocessed.npz
+```
+
+**Full bidirectional experiment (regression + classification):**
+```bash
+python run_full_experiment.py --direction google_to_alibaba \
+    --google data/raw/google --alibaba data/raw/alibaba \
+    --device cuda --out results/g2a
+
+python run_full_experiment.py --direction alibaba_to_google \
+    --google data/raw/google --alibaba data/raw/alibaba \
+    --device cuda --out results/a2g
+```
+
+### Fault Classification
+
+This pipeline trains DATL, TA-DATL, DANN, CDAN, FixBi, and ToAlign on the fault root-cause classification task.
+
+```bash
+# Prepare data (within-Alibaba split)
+python 00_prepare_data.py
+
+# Google→Alibaba transfer
+python 00_prepare_data_google_alibaba.py
+python 01_train_all_models.py --processed-dir data/processed_google_alibaba
+
+# Run all classification experiments end-to-end
+python run_all.py
+
+# Or use the convenience wrappers
+python run_google_to_alibaba.py
+python run_google_google.py
+```
+
+### GPU Server
+
+```bash
+# tmux-based background run
+tmux new -s exp
+python run.py --paper mc_cwpdda --google data/raw/google \
+    --alibaba data/raw/alibaba --device cuda
+# Ctrl+B D to detach; tmux attach -t exp to reconnect
+
+# Or use the provided GPU script
+bash run_gpu.sh
 ```
 
 ---
 
-## Expected output
+## Expected Results
+
+**Workload Prediction — Google→Alibaba (Table 3 of CWPDDA paper):**
 
 ```
-Method          |        MAE |        MSE |       MAPE |      sMAPE |   Variance
-ARIMA           |  1.260E-03 |  3.036E-06 |  4.392E-02 |  4.300E-02 |  2.187E-06
-LSTM            |  2.363E-03 |  7.432E-06 |  7.266E-02 |  7.319E-02 |  2.236E-06
-GRU             |  1.456E-03 |  3.697E-06 |  3.716E-02 |  3.796E-02 |  2.493E-06
-CNN-LSTM        |  3.429E-03 |  3.429E-06 |  3.785E-02 |  3.875E-02 |  2.390E-06
-Autoformer      |  1.975E-03 |  7.900E-06 |  8.263E-02 |  8.376E-02 |  2.027E-06
-BHT-ARIMA       |  1.153E-03 |  1.153E-06 |  2.772E-02 |  2.788E-02 |  2.165E-06
-WANN            |  9.628E-04 |  1.457E-06 |  2.979E-02 |  3.172E-02 |  2.541E-06
-TS2Vec          |  8.938E-04 |  1.272E-06 |  3.051E-02 |  3.065E-02 |  2.553E-06
-MCTL            |  7.220E-04 |  9.857E-07 |  2.575E-02 |  2.676E-02 |  1.491E-06
+Method        MAE       MAPE%     RMSE
+ARIMA         1.260e-3  4.39%     1.742e-3
+LSTM          2.363e-3  7.27%     2.726e-3
+GRU           1.456e-3  3.72%     1.923e-3
+N-BEATS       8.938e-4  3.05%     1.128e-3
+CWPDDA        2.418e0   8.66%     2.586e0
+MC-CWPDDA     < CWPDDA  < CWPDDA  < CWPDDA   (novel contribution)
 ```
 
-MCTL should have the lowest MAE and MSE — matching Table 3 (JobA) of the paper.
-
----
-
-## Sanity check — test your data loading first
-
-```bash
-python data_loader.py data/raw/google data/raw/alibaba
-```
-
-This prints series counts, length distributions, and CPU value ranges.
-If Google CPU values are ~0.0–1.0 instead of 0–100, the loader fixes it automatically.
-If you get "No CPU column found", run:
-
-```bash
-python -c "
-import gzip, json
-with gzip.open('data/raw/google/instance_usage-000000000000.json.gz', 'rt') as f:
-    print(list(json.loads(next(f)).keys()))
-"
-```
-and paste the column names — one line change in data_loader.py will fix it.
-
----
-
-## What the paper does vs what this code does
-
-| Paper | This code |
-|---|---|
-| Google Cluster Trace 2019 | Same — your 23 shards |
-| Alibaba cluster-trace-v2018 | Alibaba 2017 (same schema, different year — fine for replication) |
-| CPU mean usage as time series | Same |
-| 5-min sampling frequency | Assumed — we use whatever sampling is in the files |
-| Short jobs < 8h = few-shot target | MAX_TARGET_LEN=100 points (~8h at 5-min) in preprocess.py |
-| DTW source selection | Implemented — `--no-dtw` to skip |
-| Mixup α=1.0 (uniform) | Same |
-| KL divergence transfer loss | Same (Eq. 8) |
-| Window size 24, predict 1 step | Same defaults, configurable |
-| MAE / MSE / MAPE / sMAPE / Var | All implemented in evaluate.py |
+Results are saved to `results/` as `.json` and `.txt` table files.
 
 ---
 
 ## Troubleshooting
 
-**"No Google series loaded"** — check the path and run the sanity check above.
+**"No Google series loaded"** — check path and verify gzip integrity:
+```bash
+python data_loader.py data/raw/google data/raw/alibaba
+```
 
-**"No recognised Alibaba CSV found"** — check the filename. Rename to `machine_usage.csv` if needed.
+**"No recognised Alibaba CSV found"** — rename the file to `machine_usage.csv`.
 
-**MCTL worse than baselines** — usually means too few target training windows. Check `meta.json` for `tgt_train_windows`. If < 100, lower `MAX_TARGET_LEN` in `preprocess.py` or load more Alibaba data.
+**CUDA OOM** — reduce `--batch-size` to 16 or 32.
 
-**CUDA OOM** — reduce `--batch-size` to 32 or 16.
+**MCTL worse than baselines** — usually too few target training windows. Check `results/meta.json` for `tgt_train_windows`. If < 100, set `--max-target-len 200`.
 
-**DTW too slow** — use `--no-dtw`. Results are slightly worse but still beat most baselines.
+**DTW too slow** — use `--no-dtw`. Results are slightly lower but still competitive.

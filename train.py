@@ -85,8 +85,6 @@ def train_cwpdda(
     from cwpdda import grl_lambda
 
     model = model.to(device)
-    # weight_decay=1e-4: L2 regularisation — prevents overfitting on full 200k target dataset.
-    # Without it the model memorises training windows after ~10 epochs while val_mse stalls.
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=10, factor=0.7)
 
@@ -94,13 +92,7 @@ def train_cwpdda(
     X_tr,  y_tr  = data["tgt_train_X"], data["tgt_train_y"]
     X_val, y_val = data["tgt_val_X"],   data["tgt_val_y"]
 
-    # Build nearest-neighbour source bank before training starts.
-    # During training each target batch is paired with its nearest source window
-    # (L2 distance into the 4096-window bank), making training consistent with
-    # inference.  This is more informative than random pairing and lets the LSTM
-    # see cross-attention K/V that is actually similar to the target query Q.
     model.register_source_ref(X_src)
-    # Move the bank to GPU once so _match_source doesn't copy it every batch.
     if device.startswith("cuda") and model._src_ref is not None:
         model._src_ref = model._src_ref.to(device)
 
@@ -369,25 +361,9 @@ def train_mc_cwpdda(
     resume_from: Optional[str] = None,
 ) -> dict:
     """
-    Three-stage MC-CWPDDA training curriculum.
-
-    Stage 1 — Source pre-training:
-        Train proj_src + self_attn_src + a temporary linear head on Google source
-        data with MSE.  Initialises source representations with workload-predictive
-        structure before any domain alignment starts.
-
-    Stage 2 — Contrastive alignment:
-        Freeze the source branch (proj_src, self_attn_src).  Train target branch,
-        cross-attention, and contrastive head Gc with Lc + λ4·Lkl on paired
-        (source, target) batches.
-
-    Stage 3 — Joint fine-tuning:
-        Unfreeze everything; optimise the full loss
-        L = Ly + λ1·Lf + λ2·Ld + λ3·Lc + λ4·Lkl.
-        Early stopping on target validation MSE.
-
-    checkpoint_every / resume_from work the same as train_cwpdda — survives
-    server timeouts by saving a full recovery checkpoint every N Stage-3 epochs.
+    Three-stage curriculum: (1) pretrain source branch, (2) freeze source + align
+    target contrastively, (3) unfreeze all + joint fine-tune with early stopping.
+    Supports checkpointing to survive server timeouts.
     """
     model = model.to(device)
     X_src, y_src = data["src_X"],       data["src_y"]
@@ -406,9 +382,6 @@ def train_mc_cwpdda(
         print(f"\n[MC-CWPDDA Stage 1] Source pre-training — {stage1_epochs} epochs")
 
     model.unfreeze_all()
-    # Train source branch + actual predictor (not a tmp head) so the LSTM
-    # has useful weights before Stage 3.  Grad for proj_tgt / cross_attn
-    # flows but those params are absent from opt1, so they stay unchanged.
     opt1 = torch.optim.Adam(
         list(model.extractor.proj_src.parameters()) +
         list(model.extractor.self_attn_src.parameters()) +
@@ -423,8 +396,6 @@ def train_mc_cwpdda(
         for xb, yb in dl_src:
             xb, yb = xb.to(device), yb.to(device)
             opt1.zero_grad()
-            # Feed source as both Q and K/V so only proj_src + self_attn_src
-            # accumulate useful gradients; cross_attn / proj_tgt not in opt1.
             z_shared, _, _ = model.extractor(xb, xb)
             loss = F.mse_loss(model.predictor(z_shared), yb)
             loss.backward()

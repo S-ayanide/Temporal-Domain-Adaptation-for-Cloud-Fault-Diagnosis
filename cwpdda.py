@@ -100,19 +100,8 @@ class SelfAttentionBlock(nn.Module):
 class CrossAttentionBlock(nn.Module):
     """
     Cross-attention: Q from target, K/V from source (Eqs. 6-9).
-    Input:  q  (batch, W, d_model) — target (what to query for)
-            kv (batch, W, d_model) — source (knowledge to extract from)
-    Output: (batch, W, d_model)  — target sequence enriched with source knowledge
-
-    WHY Q=target, K=V=source (not the reverse):
-      At inference we replace the source with a canonical mean window broadcast
-      to (batch, W, d_model) — all 24 source positions are identical.  If Q were
-      source (identical × 24), cross-attention would return the same vector at
-      every timestep, giving the LSTM a constant sequence that can only predict a
-      constant value ≈ dataset mean.  With Q=target, each of the 24 target
-      positions is distinct, so the LSTM still sees a temporally-varying sequence
-      and can model dynamics.  The canonical source serves as a fixed "knowledge
-      bank" (K/V), which is a natural inference-time approximation.
+    Q=target preserves temporal diversity across timesteps; K/V=source acts
+    as a fixed knowledge bank at inference without collapsing the LSTM input.
     """
 
     def __init__(self, d_model: int, dropout: float = 0.1):
@@ -195,10 +184,6 @@ class FeatureExtractor(nn.Module):
             z_src_private = hs_sa.mean(dim=1)
             z_tgt_private = ht_sa.mean(dim=1)
 
-        # Cross-attention: Q=target (diverse 24 timesteps), K/V=source (knowledge bank).
-        # Using self-attended features so cross-attn sees refined domain representations.
-        # At inference, K/V = canonical mean source broadcast — target Q stays diverse,
-        # so the LSTM still receives 24 distinct timesteps and can model dynamics.
         z_shared = self.cross_attn(ht_sa, hs_sa)             # (batch, W, d_model)
 
         return z_shared, z_src_private, z_tgt_private
@@ -209,18 +194,9 @@ class FeatureExtractor(nn.Module):
         z_shared: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Feature extractor loss Eq. 10: Lf = 1 / MMD(SelfAttention, CrossAttention).
-
-        Paper intent: minimise 1/MMD = maximise MMD = push private away from shared.
-
-        Numerically stable implementation: -mmd / (mmd.detach() + 1e-8).
-        This gives a forward value ≈ -1 (bounded, stable) with gradient ≈ -1/mmd,
-        which correctly pushes MMD up.
-
-        Why NOT use 1/(mmd+1e-8) directly:
-          When mmd ≈ 0.001 at init, 1/mmd = 1000. With λ1=0.01, Lf contributes
-          0.01 × 1000 = 10 to total loss, swamping Ly ≈ 0.01–0.1.  The model
-          then optimises feature separation instead of prediction — worse than ARIMA.
+        Eq. 10: maximise MMD between private and shared features.
+        Uses -mmd/(mmd.detach()+1e-8) for numerical stability; naive 1/(mmd+ε)
+        explodes at init and swamps the prediction loss.
         """
         # z_shared is now (batch, W, d_model) — pool over sequence before comparing
         if z_shared.dim() == 3:
@@ -378,11 +354,7 @@ class CWPDDA(nn.Module):
         # GRL makes the extractor produce domain-invariant private features.
         Ld = self.adapter.loss(z_src_priv, z_tgt_priv, lam)
 
-        # λ1, λ2: paper does not state these values.
-        # Empirically: Ld ≈ 1.4 (discriminator at random = adversarial success).
-        # With λ2=0.1, adversarial gradient ≈ 11× prediction gradient — too dominant.
-        # λ2=0.01 keeps both auxiliary losses at the same scale as Ly.
-        lam1, lam2 = 0.01, 0.01
+        lam1, lam2 = 0.01, 0.01  # not stated in paper; tuned to keep aux losses at same scale as Ly
         loss = Ly + lam1 * Lf + lam2 * Ld
 
         return loss, {
@@ -394,19 +366,8 @@ class CWPDDA(nn.Module):
 
     def register_source_ref(self, x_src_np: np.ndarray, n: int = 0) -> None:
         """
-        Store a bank of source windows for nearest-neighbour retrieval.
-
-        Used at BOTH training time and inference time — each target window is
-        paired with its nearest source window (L2 distance) so the cross-attention
-        K/V is always relevant and training is consistent with inference.
-
-        n=0 (default): use ALL available source windows. Using the full bank gives
-        the best possible NN matches. For very large source sets (>100k) a GPU NN
-        search is fast enough; on CPU set n=8192 as a speed/quality trade-off.
-
-        Stores:
-            _src_ref:      (n, W) float32  — source window bank
-            _src_ref_mean: (1, W) float32  — fallback mean (used if bank missing)
+        Store source window bank for nearest-neighbour retrieval at train/inference.
+        n=0 uses all windows; set n=8192 on CPU for a speed/quality tradeoff.
         """
         rng = np.random.default_rng(42)
         if n > 0:
@@ -419,13 +380,7 @@ class CWPDDA(nn.Module):
             subset.mean(axis=0, keepdims=True)).float()                 # (1, W)
 
     def _match_source(self, x_tgt: torch.Tensor, bank_chunk: int = 4096) -> torch.Tensor:
-        """
-        For each target window find the nearest source window by L2 distance.
-        Returns matched source tensor (B, W) on the same device as x_tgt.
-
-        Chunked over the bank to avoid OOM: peak memory = B × bank_chunk × W × 4 bytes.
-        With B=2048, bank_chunk=4096, W=24 → 768 MB — safe on any GPU.
-        """
+        """Find nearest source window for each target window by L2 distance (chunked for OOM safety)."""
         if self._src_ref is None:
             return x_tgt   # fallback: self-attention
         bank = self._src_ref.to(x_tgt.device)   # (n, W)

@@ -277,8 +277,7 @@ def fig3_relative_improvement():
 
     fig, ax = plt.subplots(figsize=(11, 5.5))
     fig.suptitle(
-        "All Transfer Methods vs LSTM Baseline  |  Google 2019 → Alibaba 2018\n"
-        "% change in MAE relative to LSTM  (negative = better than baseline)",
+        "All Transfer Methods vs LSTM Baseline  |  Google 2019 → Alibaba 2018",
         fontsize=TITLE_FONT, fontweight="bold"
     )
 
@@ -301,7 +300,7 @@ def fig3_relative_improvement():
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=TICK_FONT)
-    ax.set_ylabel("% change in MAE vs LSTM baseline\n(negative = better than LSTM)", fontsize=LABEL_FONT)
+    ax.set_ylabel("% change in MAE vs LSTM baseline", fontsize=LABEL_FONT)
     ax.set_xlabel("Transfer Method  (Google 2019 → Alibaba 2018)", fontsize=LABEL_FONT)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
     ax.set_axisbelow(True)

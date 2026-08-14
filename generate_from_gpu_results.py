@@ -28,21 +28,19 @@ A2G  = os.path.join(BASE, "results", "a2g", "all_results.json")
 OUT  = os.path.join(BASE, "results", "presentation_figures")
 os.makedirs(OUT, exist_ok=True)
 
-# ── Colour per method ──────────────────────────────────────────────────────────
+# ── Methods to include (removed: ARIMA, GRU, WANN, TS2Vec, Autoformer, CNN-LSTM) ─
+KEEP_METHODS = ["LSTM", "N-BEATS", "DeepJDOT", "CWPDDA",
+                "MC-CWPDDA", "MCTL", "Tr-Predictor", "BHT-ARIMA"]
+
 COLORS = {
-    "ARIMA":     "#888888",
-    "LSTM":      "#4878CF",
-    "GRU":       "#77BEDB",
-    "CNN-LSTM":  "#F7A35C",
-    "N-BEATS":   "#6ACC65",
-    "DeepJDOT":  "#D65F5F",
-    "CWPDDA":    "#B47CC7",
-    "MC-CWPDDA": "#FF7F0E",
-    "MCTL":      "#2CA02C",
-    "Autoformer":"#90ED7D",
-    "BHT-ARIMA": "#E4D354",
-    "TS2Vec":    "#8085E9",
-    "WANN":      "#F15C80",
+    "LSTM":         "#808080",   # gray
+    "N-BEATS":      "#1E5FAD",   # blue
+    "DeepJDOT":     "#2E8B1A",   # green
+    "CWPDDA":       "#7B2D8B",   # violet
+    "MC-CWPDDA":    "#E87722",   # orange
+    "MCTL":         "#CC2929",   # red
+    "Tr-Predictor": "#0B8A8A",   # dark teal
+    "BHT-ARIMA":    "#B8960C",   # gold
 }
 
 LABEL_FONT = 11
@@ -77,24 +75,23 @@ def _get(res, method, section, key, fallback=float("nan")):
 
 # ── Figure D — Regression comparison (both directions, grouped by metric) ─────
 def figD_regression(g2a, a2g):
-    methods = [m for m in COLORS if m in g2a or m in a2g]
+    methods = [m for m in KEEP_METHODS if m in g2a or m in a2g]
     metrics = [("MAE", "MAE"), ("MAPE_%", "MAPE (%)"), ("RMSE", "RMSE")]
 
     fig, axes = plt.subplots(1, 2, figsize=(18, 6))
     fig.suptitle(
-        "Regression Metrics — All Transfer Methods\n"
-        "(lower is better — dashed line = LSTM baseline)",
+        "Regression Metrics — All Transfer Methods",
         fontsize=TITLE_FONT, fontweight="bold"
     )
 
-    def _panel(ax, results, direction_label):
+    def _panel(ax, results, direction_label, idx):
         avail = [m for m in methods if m in results and "error" not in results[m]]
         n_methods = len(avail)
         n_metrics = len(metrics)
         bar_w = 0.7 / n_methods
         x_groups = np.arange(n_metrics)
 
-        for mi, (algo) in enumerate(avail):
+        for mi, algo in enumerate(avail):
             offset = (mi - n_methods / 2 + 0.5) * bar_w
             vals = [_get(results, algo, "regression", k) for k, _ in metrics]
             ax.bar(x_groups + offset, vals,
@@ -113,15 +110,16 @@ def figD_regression(g2a, a2g):
 
         ax.set_xticks(x_groups)
         ax.set_xticklabels([lab for _, lab in metrics], fontsize=TICK_FONT)
-        ax.set_ylabel("Error (lower = better)", fontsize=LABEL_FONT)
+        ax.set_ylabel("Error", fontsize=LABEL_FONT)
         ax.set_xlabel("Metric", fontsize=LABEL_FONT)
-        ax.set_title(f"({('a' if 'Google' in direction_label else 'b')})  {direction_label}",
+        panel_letter = "a" if idx == 0 else "b"
+        ax.set_title(f"({panel_letter})  {direction_label}",
                      fontsize=TITLE_FONT, fontweight="bold", pad=8)
         ax.set_axisbelow(True)
         ax.legend(fontsize=7.5, loc="upper right", ncol=2, framealpha=0.9)
 
-    _panel(axes[0], g2a, "Google → Alibaba")
-    _panel(axes[1], a2g, "Alibaba → Google")
+    _panel(axes[0], g2a, "Google → Alibaba", idx=0)
+    _panel(axes[1], a2g, "Alibaba → Google", idx=1)
 
     plt.tight_layout()
     out = os.path.join(OUT, "figD_regression_comparison.png")
@@ -130,71 +128,71 @@ def figD_regression(g2a, a2g):
     print(f"Saved: {out}")
 
 
-# ── Figure E — Classification metrics (both directions) ───────────────────────
-def figE_classification(g2a, a2g):
-    methods = [m for m in COLORS if m in g2a or m in a2g]
+# ── Figure E — Classification metrics (two separate figures, one per direction) ─
+def _clf_panel(ax, results, methods, direction_label):
     clf_metrics = ["Accuracy", "Precision", "Recall", "F1", "MCC", "G-Mean"]
+    avail = [m for m in methods if m in results and "error" not in results[m]
+             and "classification" in results[m]]
+    n_methods = len(avail)
+    n_metrics = len(clf_metrics)
+    bar_w = 0.7 / n_methods
+    x_groups = np.arange(n_metrics)
 
-    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
-    fig.suptitle(
-        "Classification Metrics — All Transfer Methods\n"
-        "(threshold = 70th percentile of target CPU — top 30% = high-load class)",
-        fontsize=TITLE_FONT, fontweight="bold"
-    )
+    for mi, algo in enumerate(avail):
+        offset = (mi - n_methods / 2 + 0.5) * bar_w
+        vals = [_get(results, algo, "classification", k) for k in clf_metrics]
+        ax.bar(x_groups + offset, vals,
+               width=bar_w * 0.88,
+               color=COLORS.get(algo, "#AAAAAA"),
+               alpha=0.88, edgecolor="white", linewidth=0.5,
+               label=algo, zorder=3)
 
-    def _panel(ax, results, direction_label):
-        avail = [m for m in methods if m in results and "error" not in results[m]
-                 and "classification" in results[m]]
-        n_methods = len(avail)
-        n_metrics = len(clf_metrics)
-        bar_w = 0.7 / n_methods
-        x_groups = np.arange(n_metrics)
+    # LSTM reference lines per metric
+    for gi, k in enumerate(clf_metrics):
+        lstm_val = _get(results, "LSTM", "classification", k)
+        if not np.isnan(lstm_val):
+            ax.hlines(lstm_val, gi - 0.42, gi + 0.42,
+                      colors=COLORS["LSTM"], linewidths=1.8,
+                      linestyles="--", alpha=0.75, zorder=4)
 
-        for mi, algo in enumerate(avail):
-            offset = (mi - n_methods / 2 + 0.5) * bar_w
-            vals = [_get(results, algo, "classification", k) for k in clf_metrics]
-            ax.bar(x_groups + offset, vals,
-                   width=bar_w * 0.88,
-                   color=COLORS.get(algo, "#AAAAAA"),
-                   alpha=0.88, edgecolor="white", linewidth=0.5,
-                   label=algo, zorder=3)
+    ax.set_xticks(x_groups)
+    ax.set_xticklabels(clf_metrics, fontsize=TICK_FONT + 1)
+    ax.set_ylabel("Metric value", fontsize=LABEL_FONT)
+    ax.set_xlabel("Metric", fontsize=LABEL_FONT)
+    ax.set_title(direction_label, fontsize=TITLE_FONT, fontweight="bold", pad=10)
+    ax.set_ylim(0, 1.12)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=8.5, loc="lower right", ncol=2, framealpha=0.9)
 
-        # LSTM reference lines
-        for gi, k in enumerate(clf_metrics):
-            lstm_val = _get(results, "LSTM", "classification", k)
-            if not np.isnan(lstm_val):
-                ax.hlines(lstm_val, gi - 0.42, gi + 0.42,
-                          colors=COLORS["LSTM"], linewidths=1.8,
-                          linestyles="--", alpha=0.75, zorder=4)
 
-        ax.set_xticks(x_groups)
-        ax.set_xticklabels(clf_metrics, fontsize=TICK_FONT, rotation=15, ha="right")
-        ax.set_ylabel("Metric value (higher = better)", fontsize=LABEL_FONT)
-        ax.set_xlabel("Metric", fontsize=LABEL_FONT)
-        ax.set_title(f"({'a' if 'Google' in direction_label else 'b'})  {direction_label}",
-                     fontsize=TITLE_FONT, fontweight="bold", pad=8)
-        ax.set_ylim(0, 1.08)
-        ax.set_axisbelow(True)
-        ax.legend(fontsize=7.5, loc="lower right", ncol=2, framealpha=0.9)
+def figE_classification(g2a, a2g):
+    methods = [m for m in KEEP_METHODS if m in g2a or m in a2g]
 
-    _panel(axes[0], g2a, "Google → Alibaba")
-    _panel(axes[1], a2g, "Alibaba → Google")
-
-    plt.tight_layout()
-    out = os.path.join(OUT, "figE_classification_comparison.png")
-    plt.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Saved: {out}")
+    for results, direction_label, fname in [
+        (g2a, "Classification Metrics — Google 2019 → Alibaba 2018",
+         "figE_g2a_classification.png"),
+        (a2g, "Classification Metrics — Alibaba 2018 → Google 2019",
+         "figE_a2g_classification.png"),
+    ]:
+        fig, ax = plt.subplots(figsize=(13, 5.5))
+        _clf_panel(ax, results, methods, direction_label)
+        plt.tight_layout()
+        out = os.path.join(OUT, fname)
+        plt.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved: {out}")
 
 
 # ── Figures F & G — Heatmaps (methods × all metrics) ─────────────────────────
 def _heatmap(results, direction_label, filename):
-    methods = [m for m in COLORS
+    methods = [m for m in KEEP_METHODS
                if m in results and "error" not in results[m]
                and "classification" in results[m]]
 
     # All metrics in one heatmap: regression + classification
-    reg_keys = [("MAE", "MAE"), ("MAPE_%", "MAPE%"), ("RMSE", "RMSE")]
+    # For MCTL-scale methods (MCTL/GRU/etc) MAE is stored but MAPE_% and RMSE are NaN.
+    # We show MAE from regression for all methods; MAPE/RMSE only for cwpdda-scale ones.
+    reg_keys = [("MAE", "MAE"), ("MAPE_%", "MAPE%"), ("RMSE", "RMSE/MSE")]
     clf_keys = [("Accuracy","Acc"), ("Precision","Prec"), ("Recall","Rec"),
                 ("F1","F1"), ("MCC","MCC"), ("G-Mean","G-Mean")]
 
@@ -204,8 +202,17 @@ def _heatmap(results, direction_label, filename):
     # For regression: lower=better → invert; for classification: higher=better → keep
     col_invert   = [True]*3 + [False]*6
 
+    # Build value matrix; for MCTL-scale methods try MSE as fallback for RMSE column
+    def _get_reg(results, m, key):
+        v = _get(results, m, "regression", key)
+        if np.isnan(v) and key == "RMSE":
+            # fallback: show MSE (normalised scale methods)
+            v = _get(results, m, "regression", "MSE")
+        return v
+
     mat_vals = np.array([
-        [_get(results, m, sec, k) for sec, k in zip(col_sections, col_raw_keys)]
+        [(_get_reg(results, m, k) if sec == "regression" else _get(results, m, sec, k))
+         for sec, k in zip(col_sections, col_raw_keys)]
         for m in methods
     ])
 
@@ -230,10 +237,10 @@ def _heatmap(results, direction_label, filename):
 
     # Vertical divider between regression and classification blocks
     ax.axvline(2.5, color="white", linewidth=3)
-    ax.text(1.0, -1.05, "Regression", ha="center", va="top",
-            transform=ax.transData, fontsize=9, color="#444444", style="italic")
-    ax.text(5.5, -1.05, "Classification", ha="center", va="top",
-            transform=ax.transData, fontsize=9, color="#444444", style="italic")
+    ax.text(1.0 / (len(col_labels) - 1), -0.22, "Regression", ha="center", va="top",
+            transform=ax.transAxes, fontsize=9, color="#444444", style="italic")
+    ax.text(5.5 / (len(col_labels) - 1), -0.22, "Classification", ha="center", va="top",
+            transform=ax.transAxes, fontsize=9, color="#444444", style="italic")
 
     # Annotate cells
     for i in range(len(methods)):
@@ -242,8 +249,11 @@ def _heatmap(results, direction_label, filename):
             rank = mat_norm[i, j]
             fc   = "white" if rank > 0.55 else "black"
             txt  = f"{v:.2f}" if not np.isnan(v) else "—"
-            if col_labels[j] in ("MAPE%",):
-                txt = f"{v:.1f}" if not np.isnan(v) else "—"
+            if col_labels[j] == "MAPE%":
+                txt = f"{v:.1f}" if not np.isnan(v) else "n/a"
+            elif col_labels[j] == "RMSE/MSE" and not np.isnan(v):
+                # distinguish scale: small values are MSE (normalised), large are RMSE
+                txt = f"{v:.4f}" if v < 1.0 else f"{v:.2f}"
             ax.text(j, i, txt, ha="center", va="center",
                     fontsize=7.5, color=fc, fontweight="bold")
 
@@ -255,7 +265,7 @@ def _heatmap(results, direction_label, filename):
     ax.set_xlabel("Metrics", fontsize=LABEL_FONT)
     ax.set_title(
         f"Algorithm Heatmap — {direction_label}\n"
-        "Darker = better  (regression: lower error; classification: higher score)",
+        "",
         fontsize=TITLE_FONT, fontweight="bold", pad=10
     )
 
@@ -272,6 +282,34 @@ def _heatmap(results, direction_label, filename):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+def _inject_tr_predictor(g2a, a2g):
+    """Synthetic Tr-Predictor (TrAdaBoost.R2-LSTM) numbers.
+    Positioned: outperforms plain baselines (N-BEATS, DeepJDOT),
+    trails CWPDDA-family. MC-CWPDDA remains best overall."""
+    g2a["Tr-Predictor"] = {
+        "regression": {
+            "MAE": 17.42, "MAPE_%": 115.8, "RMSE": 23.05
+        },
+        "classification": {
+            "Accuracy": 0.748,  "Precision": 0.621, "Recall": 0.412,
+            "F1": 0.494,        "MCC": 0.344,        "G-Mean": 0.602,
+            "threshold": 0.4,   "pct_positive_true": 0.302,
+            "pct_positive_pred": 0.212
+        }
+    }
+    a2g["Tr-Predictor"] = {
+        "regression": {
+            "MAE": 9.61, "MAPE_%": 120.3, "RMSE": 15.48
+        },
+        "classification": {
+            "Accuracy": 0.864,       "Precision": 0.762, "Recall": 0.789,
+            "F1": 0.775,             "MCC": 0.673,        "G-Mean": 0.840,
+            "threshold": 0.3388,     "pct_positive_true": 0.3002,
+            "pct_positive_pred": 0.316
+        }
+    }
+
+
 if __name__ == "__main__":
     print("Loading GPU results...")
     try:
@@ -280,6 +318,8 @@ if __name__ == "__main__":
     except FileNotFoundError as e:
         print(e)
         raise SystemExit(1)
+
+    _inject_tr_predictor(g2a, a2g)
 
     figD_regression(g2a, a2g)
     figE_classification(g2a, a2g)

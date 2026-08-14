@@ -1,28 +1,45 @@
-############################
-# Mac / editor noise
-############################
+# macOS
 .DS_Store
 **/.DS_Store
 
-############################
-# Heavy / derived artifacts
-############################
-# Ignore all raw/processed traces and any other data artifacts
+# Data — download via download_data.sh (see README)
 **/data/
 
-# Ignore trained models and intermediate model artifacts
+# Trained model checkpoints
+checkpoints/
 **/models/
 **/*.pkl
 **/*.joblib
 **/*.pt
 **/*.ckpt
 
-# Ignore large columnar formats
+# Large derived artifacts
 **/*.parquet
+**/*.npz
+**/*.npy
 
-# Ignore logs
+# Results (regenerable from scripts)
+results/
+
+# Logs and run output
+logs/
+nohup.out
 **/*.log
 
-# Common large exports (keep these scoped; avoid ignoring all CSVs globally)
-**/*.xlsx
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Preprocessing cache
+cache/
+tr_cache/
+
+# Misc exports
+**/*.xlsx

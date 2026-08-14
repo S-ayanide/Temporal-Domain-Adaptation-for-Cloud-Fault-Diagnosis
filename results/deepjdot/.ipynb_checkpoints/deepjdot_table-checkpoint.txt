@@ -1,9 +1,0 @@
-DeepJDOT Results — Google → Alibaba
-DeepJDOT: unsupervised DA (uses Alibaba unlabelled + Google labelled)
-Baselines: trained in-domain on Alibaba
-
-Method             MAE    MAPE %      RMSE
----------------------------------------------
-ARIMA          19.4478    119.38   29.9460
-LSTM           17.6893    119.50   23.3942
-DeepJDOT       17.9936    118.76   24.2919

@@ -407,10 +407,7 @@ def load_alibaba(
 
     df[cpu_col] = pd.to_numeric(df[cpu_col], errors="coerce")
     df = df[df[cpu_col] >= 0].copy()         # drop -1 sentinels
-    # Container CPU is stored as % of container quota — values commonly exceed 100.
-    # Do NOT clip to 100; per-series min-max normalisation in preprocess.py handles scaling.
-    # Machine-level data is already in [0,100] so this is safe for both.
-    df[cpu_col] = df[cpu_col].clip(lower=0).astype(np.float32)
+    df[cpu_col] = df[cpu_col].clip(lower=0).astype(np.float32)  # per-series normalisation handles upper range
 
     if ts_col:
         df[ts_col] = pd.to_numeric(df[ts_col], errors="coerce")
@@ -429,13 +426,8 @@ def load_alibaba(
 
     rng = np.random.default_rng(seed)
 
-    # The CWPDDA paper uses "containers meeting small sample condition" — short-lived
-    # containers with few data points.  The 2018 container trace has median ~1168 pts;
-    # the 2017 trace had ~144 pts (12h × 5-min intervals).
-    #
-    # For both machine_usage (fallback) and container_usage (long series): split into
-    # 144-point chunks so each chunk resembles one 12-hour container lifetime.
-    # This matches the paper's regime where transfer from Google is actually needed.
+    # Split long series into 96-pt chunks to simulate the short-lived container
+    # regime where cross-cloud transfer is actually beneficial.
     median_len = float(np.median([len(s) for s in all_series]))
     if median_len > 300 and not no_chunk:
         chunk_len = 96   # 8h at 5-min sampling; fits MCTL's <=100-pt few-shot filter

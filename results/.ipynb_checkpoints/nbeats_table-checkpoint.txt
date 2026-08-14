@@ -1,8 +1,0 @@
-N-BEATS Zero-Shot Results — Google → Alibaba
-(N-BEATS trained on Google only; baselines trained on Alibaba)
-
-Method                       MAE    MAPE %      RMSE
-------------------------------------------------------
-ARIMA                     7.2944     19.65   10.5118
-LSTM                      6.7035     18.47    9.2140
-N-BEATS                   6.7111     19.35    9.4994
